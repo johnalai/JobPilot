@@ -86,7 +86,7 @@ const ChatBot: React.FC = () => {
             nextStartTimeRef.current = audioContextRef.current.currentTime;
         }
 
-        const aiTTS = new GoogleGenAI({ apiKey: process.env.API_KEY! }); // New instance for TTS call
+        const aiTTS = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY! }); // New instance for TTS call
         const ttsResponse = await aiTTS.models.generateContent({
           model: "gemini-2.5-flash-preview-tts",
           contents: [{ parts: [{ text: botResponse }] }],
