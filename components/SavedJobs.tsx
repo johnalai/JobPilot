@@ -1,8 +1,8 @@
 import React, { useState } from 'react';
 import { useAppContext } from '../context/AppContext';
-import { Job } from '../types';
+import { Job, WebGroundingChunk } from '../types';
 import { BookmarkIcon, LocationMarkerIcon, CalendarIcon, BriefcaseIcon, LoadingSpinner } from './icons';
-import { analyzeJobUrl, analyzeJobText } from '../services/geminiService';
+import { analyzeJobUrl, analyzeJobText, KNOWN_PAYWALLED_DOMAINS } from '../services/geminiService';
 
 const SavedJobs: React.FC = () => {
   const {
@@ -93,6 +93,56 @@ const SavedJobs: React.FC = () => {
       });
   };
 
+  // Helper function to extract domain from URL
+  const getDomain = (url: string) => {
+    try {
+        const hostname = new URL(url).hostname;
+        // Remove 'www.' prefix if present
+        return hostname.startsWith('www.') ? hostname.substring(4) : hostname;
+    } catch (e) {
+        return ''; // Invalid URL
+    }
+  };
+
+  const renderGroundingLinks = (groundingChunks?: Job['grounding']) => {
+    if (!groundingChunks || groundingChunks.length === 0) return null;
+
+    const uniqueLinks = new Map<string, { uri: string, title?: string }>();
+
+    groundingChunks.forEach(chunk => {
+      let uri = '';
+      let title = '';
+
+      // Only process web grounding chunks, maps grounding is removed
+      if ('web' in chunk && chunk.web?.uri) {
+        uri = chunk.web.uri;
+        title = chunk.web.title || uri;
+      }
+      
+      // Filter out paywalled domains
+      if (uri && !KNOWN_PAYWALLED_DOMAINS.includes(getDomain(uri))) {
+        uniqueLinks.set(uri, { uri, title });
+      }
+    });
+
+    if (uniqueLinks.size === 0) return null;
+
+    return (
+      <div className="mt-4 pt-4 border-t dark:border-gray-700">
+        <h4 className="font-bold text-lg mb-2">Sources:</h4>
+        <ul className="list-disc list-inside text-sm text-blue-600 dark:text-blue-400">
+          {Array.from(uniqueLinks.values()).map((link, index) => (
+            <li key={index}>
+              <a href={link.uri} target="_blank" rel="noopener noreferrer" className="hover:underline">
+                {link.title || link.uri}
+              </a>
+            </li>
+          ))}
+        </ul>
+      </div>
+    );
+  };
+
   const renderJobDetails = (job: Job) => (
     <div className="p-6 h-full flex flex-col animate-fade-in">
       <div className="flex justify-between items-start">
@@ -114,6 +164,7 @@ const SavedJobs: React.FC = () => {
         <div className="prose prose-sm dark:prose-invert max-w-none">
             {formattedMarkdown(job.description)}
         </div>
+        {renderGroundingLinks(job.grounding)}
       </div>
       <div className="mt-6 border-t dark:border-gray-700 pt-4 flex gap-3">
         {job.sourceUrl && (
@@ -149,8 +200,9 @@ const SavedJobs: React.FC = () => {
                     className={`p-4 rounded-lg cursor-pointer transition-colors border-2 ${selectedJob?.id === job.id ? 'bg-blue-100 dark:bg-blue-900/50 border-blue-500' : 'bg-gray-50 dark:bg-gray-700/50 border-transparent hover:border-blue-400'}`}>
                     <h4 className="font-bold">{job.title}</h4>
                     <p className="text-sm text-gray-600 dark:text-gray-400">{job.company}</p>
-                     <div className="text-xs text-gray-500 dark:text-gray-500 mt-1 flex justify-between">
-                      <span>{job.location}</span>
+                     <div className="text-xs text-gray-500 dark:text-gray-500 mt-1 flex items-center justify-between">
+                      <span className="flex items-center gap-1"><LocationMarkerIcon className="w-3 h-3"/>{job.location}</span>
+                      {job.workModel && <span className="flex items-center gap-1"><BriefcaseIcon className="w-3 h-3"/>{job.workModel}</span>}
                       <span className="font-semibold">{job.datePosted}</span>
                     </div>
                   </li>

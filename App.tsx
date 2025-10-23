@@ -1,4 +1,3 @@
-
 import React from 'react';
 import Header from './components/Header';
 import Dashboard from './components/Dashboard';
@@ -9,6 +8,8 @@ import MyApplications from './components/MyApplications';
 import InterviewCoach from './components/InterviewCoach';
 import ChatBot from './components/ChatBot';
 import SavedJobs from './components/SavedJobs';
+// REMOVED: import VideoStudio from './components/VideoStudio';
+import TaskManager from './components/TaskManager'; // New import
 import { useAppContext } from './context/AppContext';
 
 const App: React.FC = () => {
@@ -30,6 +31,10 @@ const App: React.FC = () => {
         return <InterviewCoach />;
       case 'saved-jobs':
         return <SavedJobs />;
+      // REMOVED: case 'video-studio':
+      // REMOVED:   return <VideoStudio />;
+      case 'task-manager': // New case
+        return <TaskManager />;
       default:
         return <Dashboard />;
     }

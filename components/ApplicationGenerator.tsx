@@ -1,3 +1,4 @@
+
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { useAppContext } from '../context/AppContext';
 import { generateResumeForJob, generateCoverLetterForJob, analyzeSkillGap, analyzeATSCompliance } from '../services/geminiService';
@@ -32,7 +33,7 @@ const ApplicationGenerator: React.FC = () => {
     setLoading(prev => ({ ...prev, analysis: true }));
     setError(null);
     try {
-      const result = await analyzeSkillGap(job, baseResume);
+      const result = await analyzeSkillGap(job, baseResume.activeContent);
       setSkillAnalysis(result);
     } catch (e: any) {
       setError(e.message || 'Failed to analyze skill gap.');
@@ -60,7 +61,7 @@ const ApplicationGenerator: React.FC = () => {
     setError(null);
     setAtsScore(undefined); // Reset ATS score when regenerating
     try {
-      const result = await generateResumeForJob(job, baseResume, customHeader);
+      const result = await generateResumeForJob(job, baseResume.activeContent, customHeader);
       setGeneratedResume(result);
       await runATSAnalysis(result); // Run ATS analysis after resume is generated
     } catch (e: any) {
@@ -75,7 +76,7 @@ const ApplicationGenerator: React.FC = () => {
     setLoading(prev => ({ ...prev, coverLetter: true }));
     setError(null);
     try {
-      const result = await generateCoverLetterForJob(job, baseResume, coverLetterTone, customHeader);
+      const result = await generateCoverLetterForJob(job, baseResume.activeContent, coverLetterTone, customHeader);
       setGeneratedCoverLetter(result);
     } catch (e: any) {
       setError(e.message || 'Failed to generate cover letter.');
@@ -167,7 +168,7 @@ const ApplicationGenerator: React.FC = () => {
                     <div className={`text-5xl font-bold ${getScoreColor(atsScore.score)}`}>{atsScore.score}</div>
                     <p className="font-semibold">Match Score</p>
                     <p className="text-sm mt-2 text-gray-600 dark:text-gray-400">{atsScore.feedback}</p>
-                     <button onClick={() => downloadElementAsPdf('ats-report-card', `${job.company}-ATS-Report.pdf`)} className="mt-4 w-full bg-gray-200 dark:bg-gray-700 hover:bg-gray-300 dark:hover:bg-gray-600 font-bold py-2 px-4 rounded-lg text-sm">
+                     <button onClick={() => downloadElementAsPdf('ats-report-card', `${job.company}-${job.title}-ATS-Report.pdf`)} className="mt-4 w-full bg-gray-200 dark:bg-gray-700 hover:bg-gray-300 dark:hover:bg-gray-600 font-bold py-2 px-4 rounded-lg text-sm">
                         Download Report
                     </button>
                 </div>

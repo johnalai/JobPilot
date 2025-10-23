@@ -1,5 +1,5 @@
-import { GoogleGenAI, Type, GenerateContentResponse, Chat } from "@google/genai";
-import { Job, Resume, ResumeContent, SkillGapAnalysis, GroundingChunk, Application } from '../types';
+import { GoogleGenAI, Type, GenerateContentResponse, Chat, Modality, FunctionDeclaration, Tool } from "@google/genai";
+import { Job, Resume, ResumeContent, SkillGapAnalysis, GroundingChunk, Application, WebGroundingChunk } from '../types';
 
 // This interface is needed for findJobs, it's defined in JobFinder.tsx but better to have it here or in types.ts
 export interface FindJobsFilters {
@@ -11,6 +11,21 @@ export interface FindJobsFilters {
   skills: string;
 }
 
+// List of known paywalled domains to filter out from sources
+export const KNOWN_PAYWALLED_DOMAINS = [
+  'remoterocketship.com', // Example paywalled site
+  // Add other paywalled domains as needed
+];
+
+// Helper to encode Uint8Array to base64
+function encode(bytes: Uint8Array) {
+  let binary = '';
+  const len = bytes.byteLength;
+  for (let i = 0; i < len; i++) {
+    binary += String.fromCharCode(bytes[i]);
+  }
+  return btoa(binary);
+}
 
 const ai = new GoogleGenAI({ apiKey: process.env.API_KEY! });
 
@@ -68,7 +83,7 @@ export const parseResumeText = async (rawText: string): Promise<ResumeContent> =
   return { ...jsonResponse, rawText };
 };
 
-// For finding jobs using Google Search grounding
+// For finding jobs using Google Search and optionally Maps grounding
 export const findJobs = async (filters: FindJobsFilters, resume: ResumeContent | null): Promise<Job[]> => {
   let prompt = `Find relevant job postings based on the following criteria:\n`;
   prompt += `- Keywords: ${filters.query}\n`;
@@ -86,11 +101,16 @@ export const findJobs = async (filters: FindJobsFilters, resume: ResumeContent |
   }
   prompt += "\nReturn a list of 5 job postings. For each job, provide a title, company, location, a brief description, and if possible, work model, date posted, and a source URL.";
 
+  // FIX: Declare tools with the correct type to allow both GoogleSearchTool and GoogleMapsTool.
+  const tools: Tool[] = [{ googleSearch: {} }];
+  // Removed toolConfig as Maps grounding is disabled
+
   const response = await ai.models.generateContent({
     model: 'gemini-2.5-flash',
     contents: prompt,
     config: {
-      tools: [{ googleSearch: {} }],
+      tools: tools,
+      // Removed toolConfig: toolConfig
     },
   });
 
@@ -117,8 +137,7 @@ export const findJobs = async (filters: FindJobsFilters, resume: ResumeContent |
             location: { type: Type.STRING },
             description: { type: Type.STRING },
             workModel: { type: Type.STRING },
-            datePosted: { type: Type.STRING },
-            sourceUrl: { type: Type.STRING }
+            datePosted: { type: Type.STRING }
           },
           required: ['title', 'company', 'location', 'description']
         }
@@ -138,7 +157,8 @@ export const findJobs = async (filters: FindJobsFilters, resume: ResumeContent |
 
 // For the chatbot
 export const getChatStream = async (message: string, history: { role: 'user' | 'model', parts: { text: string }[] }[]) => {
-    const chat: Chat = ai.chats.create({
+    const aiChat = new GoogleGenAI({ apiKey: process.env.API_KEY! }); // New instance for chat
+    const chat: Chat = aiChat.chats.create({
         model: 'gemini-2.5-flash',
         config: {
             systemInstruction: "You are JobBot, an expert career assistant. Help users with their job search, resume building, and interview preparation. Keep your answers concise and helpful."
@@ -191,8 +211,10 @@ export const analyzeJobUrl = async (url: string): Promise<Partial<Job>> => {
             }
         }
     });
+    
+    const groundingChunks = response.candidates?.[0]?.groundingMetadata?.groundingChunks as GroundingChunk[] || [];
 
-    return { ...JSON.parse(extractionResponse.text), sourceUrl: url };
+    return { ...JSON.parse(extractionResponse.text), sourceUrl: url, grounding: groundingChunks };
 };
 
 // For analyzing job from raw text
@@ -224,7 +246,7 @@ export const analyzeJobText = async (text: string): Promise<Partial<Job>> => {
 
 
 // For generating a tailored resume
-export const generateResumeForJob = async (job: Job, resume: Resume, customHeader?: string): Promise<string> => {
+export const generateResumeForJob = async (job: Job, resumeContent: ResumeContent, customHeader?: string): Promise<string> => {
     let basePrompt = `
     Job Description:
     ---
@@ -234,7 +256,7 @@ export const generateResumeForJob = async (job: Job, resume: Resume, customHeade
 
     Base Resume:
     ---
-    ${resume.content.rawText}
+    ${resumeContent.rawText}
     ---
 
     Based on the job description, rewrite the 'Base Resume' to highlight the most relevant skills and experiences.
@@ -254,7 +276,7 @@ export const generateResumeForJob = async (job: Job, resume: Resume, customHeade
 };
 
 // For generating a tailored cover letter
-export const generateCoverLetterForJob = async (job: Job, resume: Resume, userTone: string, customHeader?: string): Promise<string> => {
+export const generateCoverLetterForJob = async (job: Job, resumeContent: ResumeContent, userTone: string, customHeader?: string): Promise<string> => {
     let basePrompt = `
     Job Description:
     ---
@@ -264,8 +286,8 @@ export const generateCoverLetterForJob = async (job: Job, resume: Resume, userTo
 
     Candidate's Resume Summary:
     ---
-    Skills: ${resume.content.skills.join(', ')}
-    Experience: ${resume.content.experience.map(e => `${e.title} at ${e.company}`).join('; ')}
+    Skills: ${resumeContent.skills.join(', ')}
+    Experience: ${resumeContent.experience.map(e => `${e.title} at ${e.company}`).join('; ')}
     ---
     
     User-specified tone: ${userTone}
@@ -289,6 +311,7 @@ export const generateCoverLetterForJob = async (job: Job, resume: Resume, userTo
 };
 
 export const analyzeATSCompliance = async (job: Job, generatedResume: string): Promise<Application['atsScore']> => {
+  const aiPro = new GoogleGenAI({ apiKey: process.env.API_KEY! }); // New instance for Pro model
   const prompt = `Act as an advanced Applicant Tracking System (ATS). Analyze the provided tailored resume against the job description.
   Provide a score from 0 to 100 representing the match quality.
   Also provide concise feedback on why the score was given, focusing on keyword alignment and relevance of experience.
@@ -303,8 +326,8 @@ export const analyzeATSCompliance = async (job: Job, generatedResume: string): P
   ${generatedResume}
   ---
   `;
-  const response = await ai.models.generateContent({
-    model: 'gemini-2.5-flash',
+  const response = await aiPro.models.generateContent({
+    model: 'gemini-2.5-pro', // Using Pro for complex analysis
     contents: prompt,
     config: {
       responseMimeType: 'application/json',
@@ -315,7 +338,8 @@ export const analyzeATSCompliance = async (job: Job, generatedResume: string): P
           feedback: { type: Type.STRING, description: "Brief feedback on the score." }
         },
         required: ['score', 'feedback']
-      }
+      },
+      thinkingConfig: { thinkingBudget: 32768 }, // Max thinking budget for 2.5 Pro
     }
   });
   return JSON.parse(response.text);
@@ -323,7 +347,8 @@ export const analyzeATSCompliance = async (job: Job, generatedResume: string): P
 
 
 // For skill gap analysis
-export const analyzeSkillGap = async (job: Job, resume: Resume): Promise<SkillGapAnalysis> => {
+export const analyzeSkillGap = async (job: Job, resumeContent: ResumeContent): Promise<SkillGapAnalysis> => {
+  const aiPro = new GoogleGenAI({ apiKey: process.env.API_KEY! }); // New instance for Pro model
   const prompt = `
     Job Description Keywords & Requirements:
     ---
@@ -332,7 +357,7 @@ export const analyzeSkillGap = async (job: Job, resume: Resume): Promise<SkillGa
 
     Candidate's Skills from Resume:
     ---
-    ${resume.content.skills.join(', ')}
+    ${resumeContent.skills.join(', ')}
     ---
 
     Analyze the candidate's skills against the job description. Identify:
@@ -340,8 +365,8 @@ export const analyzeSkillGap = async (job: Job, resume: Resume): Promise<SkillGa
     2.  'missingSkills': Important skills required by the job that are not listed in the candidate's skills.
     3.  'suggestions': Actionable suggestions for how the candidate can bridge the gap for the missing skills (e.g., 'Highlight project X which used technology Y', 'Consider a short online course in Z').
   `;
-  const response = await ai.models.generateContent({
-    model: 'gemini-2.5-flash',
+  const response = await aiPro.models.generateContent({
+    model: 'gemini-2.5-pro', // Using Pro for complex analysis
     contents: prompt,
     config: {
       responseMimeType: "application/json",
@@ -353,8 +378,70 @@ export const analyzeSkillGap = async (job: Job, resume: Resume): Promise<SkillGa
           suggestions: { type: Type.ARRAY, items: { type: Type.STRING } }
         },
         required: ['matchingSkills', 'missingSkills', 'suggestions']
-      }
+      },
+      thinkingConfig: { thinkingBudget: 32768 }, // Max thinking budget for 2.5 Pro
     }
   });
   return JSON.parse(response.text);
 };
+
+
+// REMOVED: Video Studio Functions (generateVideo and analyzeVideo)
+// export const generateVideo = async (
+//   prompt: string,
+//   imageBytes?: string,
+//   imageMimeType?: string,
+//   aspectRatio: '16:9' | '9:16' = '16:9'
+// ): Promise<{ uri: string, mimeType: string }> => {
+//   // API Key selection check for Veo models
+//   if (!window.aistudio.hasSelectedApiKey()) {
+//     throw new Error('VEO models require an API key to be selected. Please select one.');
+//   }
+  
+//   const aiVideo = new GoogleGenAI({ apiKey: process.env.API_KEY! }); // New instance for video model
+
+//   let operation = await aiVideo.models.generateVideos({
+//     model: 'veo-3.1-fast-generate-preview',
+//     prompt: prompt,
+//     image: imageBytes && imageMimeType ? {
+//       imageBytes: imageBytes,
+//       mimeType: imageMimeType,
+//     } : undefined,
+//     config: {
+//       numberOfVideos: 1,
+//       resolution: '720p',
+//       aspectRatio: aspectRatio,
+//     },
+//   });
+
+//   while (!operation.done) {
+//     await new Promise(resolve => setTimeout(resolve, 10000)); // Poll every 10 seconds
+//     operation = await aiVideo.operations.getVideosOperation({ operation: operation });
+//   }
+
+//   if (operation.response?.generatedVideos?.[0]?.video?.uri) {
+//     return {
+//       uri: operation.response.generatedVideos[0].video.uri,
+//       mimeType: 'video/mp4' // Veo typically returns mp4
+//     };
+//   } else {
+//     throw new Error('Video generation failed or returned no URI.');
+//   }
+// };
+
+// export const analyzeVideo = async (videoUri: string, videoDescription: string): Promise<string> => {
+//   const aiPro = new GoogleGenAI({ apiKey: process.env.API_KEY! }); // New instance for Pro model
+//   const prompt = `Analyze the video at the following URL. Focus on ${videoDescription || 'summarizing its key information, themes, and significant events'}.
+//   Video URL: ${videoUri}
+//   `;
+
+//   const response = await aiPro.models.generateContent({
+//     model: 'gemini-2.5-pro', // Using Pro for video understanding
+//     contents: prompt,
+//     config: {
+//       tools: [{ googleSearch: {} }], // Use Google Search to access video content if possible
+//       thinkingConfig: { thinkingBudget: 32768 }, // Max thinking budget for 2.5 Pro
+//     },
+//   });
+//   return response.text;
+// };

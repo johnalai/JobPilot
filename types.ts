@@ -1,12 +1,26 @@
 // Moved from geminiService.ts to resolve circular dependency
-export interface GroundingChunk {
+export interface WebGroundingChunk {
   web: {
     uri?: string;
     title?: string;
   }
 }
 
-export type View = 'dashboard' | 'resume-hub' | 'job-finder' | 'saved-jobs' | 'applications' | 'application-generator' | 'interview-coach';
+export type GroundingChunk = WebGroundingChunk;
+
+export type TaskStatus = 'Pending' | 'In Progress' | 'Completed';
+export type TaskPriority = 'Low' | 'Medium' | 'High'; // New: TaskPriority type
+
+export interface Task {
+  id: string;
+  title: string;
+  description: string;
+  dueDate: string; // ISO date string e.g., 'YYYY-DD-MM'
+  status: TaskStatus;
+  priority: TaskPriority; // New: Added priority field
+}
+
+export type View = 'dashboard' | 'resume-hub' | 'job-finder' | 'saved-jobs' | 'applications' | 'application-generator' | 'interview-coach' | 'task-manager';
 
 export interface Experience {
   title: string;
@@ -26,7 +40,20 @@ export interface ResumeContent {
   education: Education[];
 }
 
+export interface ResumeVersion {
+  content: ResumeContent;
+  timestamp: number;
+  versionName: string;
+}
+
 export interface Resume {
+  id: string;
+  name: string;
+  activeContent: ResumeContent; // The currently active/displayed content
+  versions: ResumeVersion[]; // History of all saved contents
+}
+
+export interface ResumeTemplate {
   id: string;
   name: string;
   content: ResumeContent;
@@ -72,4 +99,10 @@ export interface InterviewFeedback {
   score: number;
   strengths: string[];
   areasForImprovement: string[];
+}
+
+export interface Message {
+  id: number;
+  text: string;
+  sender: 'user' | 'bot';
 }

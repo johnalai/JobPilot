@@ -1,8 +1,7 @@
-
 import React from 'react';
 // FIX: Use relative paths for imports from other directories.
 import { useAppContext } from '../context/AppContext';
-import { BriefcaseIcon, ResumeIcon, BookmarkIcon } from './icons';
+import { BriefcaseIcon, ResumeIcon, BookmarkIcon, ListUlIcon } from './icons'; // Removed VideoIcon import
 import { View } from '../types';
 
 type NavItem = {
@@ -17,6 +16,8 @@ const navItems: NavItem[] = [
     { name: 'Find Jobs', view: 'job-finder', icon: BriefcaseIcon },
     { name: 'Saved Jobs', view: 'saved-jobs', icon: BookmarkIcon },
     { name: 'My Applications', view: 'applications', icon: BriefcaseIcon },
+    // REMOVED: { name: 'Video Studio', view: 'video-studio', icon: VideoIcon },
+    { name: 'Task Manager', view: 'task-manager', icon: ListUlIcon }, // New navigation item
 ];
 
 const Header: React.FC = () => {

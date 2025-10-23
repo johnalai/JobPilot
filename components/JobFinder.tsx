@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { useAppContext } from '../context/AppContext';
-import { findJobs, FindJobsFilters } from '../services/geminiService';
-import { Job } from '../types';
+import { findJobs, FindJobsFilters, KNOWN_PAYWALLED_DOMAINS } from '../services/geminiService';
+import { Job, WebGroundingChunk } from '../types';
 import { LoadingSpinner, BookmarkIcon, LocationMarkerIcon, CalendarIcon, BriefcaseIcon } from './icons';
 
 const initialFilters: FindJobsFilters = {
@@ -34,6 +34,7 @@ const JobFinder: React.FC = () => {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
+
   const selectedJob = selectedJobForViewing;
   const defaultResume = resumes.find(r => r.id === defaultResumeId);
 
@@ -51,7 +52,6 @@ const JobFinder: React.FC = () => {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-
   const handleFilterChange = (e: React.ChangeEvent<HTMLInputElement | HTMLSelectElement>) => {
     const { name, value } = e.target;
     setFilters(prev => ({ ...prev, [name]: value }));
@@ -63,7 +63,8 @@ const JobFinder: React.FC = () => {
     setJobs([]);
     setSelectedJobForViewing(null);
     try {
-      const results = await findJobs(filters, defaultResume?.content || null);
+      // Removed userLocation from filters as Maps Grounding is disabled
+      const results = await findJobs(filters, defaultResume?.activeContent || null);
       setJobs(results);
     } catch (e: any) {
       setError(e.message || "Failed to find jobs.");
@@ -77,11 +78,8 @@ const JobFinder: React.FC = () => {
       setError("Please set a default resume before generating an application.");
       return;
     }
-    const resumeToUse = defaultResume;
-    
-    // Prompt to select a resume
-    // For simplicity, we use the default resume here. A modal could be added.
-    setGenerationContext({ job, baseResume: resumeToUse });
+    // FIX: Pass activeContent to generationContext
+    setGenerationContext({ job, baseResume: { id: defaultResume.id, name: defaultResume.name, activeContent: defaultResume.activeContent, versions: defaultResume.versions } });
     setView('application-generator');
   };
 
@@ -110,6 +108,55 @@ const JobFinder: React.FC = () => {
       });
   };
 
+  // Helper function to extract domain from URL
+  const getDomain = (url: string) => {
+    try {
+        const hostname = new URL(url).hostname;
+        // Remove 'www.' prefix if present
+        return hostname.startsWith('www.') ? hostname.substring(4) : hostname;
+    } catch (e) {
+        return ''; // Invalid URL
+    }
+  };
+
+  const renderGroundingLinks = (groundingChunks?: Job['grounding']) => {
+    if (!groundingChunks || groundingChunks.length === 0) return null;
+
+    const uniqueLinks = new Map<string, { uri: string, title?: string }>();
+
+    groundingChunks.forEach(chunk => {
+      let uri = '';
+      let title = '';
+
+      // Only process web grounding chunks, maps grounding is removed
+      if ('web' in chunk && chunk.web?.uri) {
+        uri = chunk.web.uri;
+        title = chunk.web.title || uri;
+      }
+      
+      if (uri && !KNOWN_PAYWALLED_DOMAINS.includes(getDomain(uri))) {
+        uniqueLinks.set(uri, { uri, title });
+      }
+    });
+
+    if (uniqueLinks.size === 0) return null;
+
+    return (
+      <div className="mt-4 pt-4 border-t dark:border-gray-700">
+        <h4 className="font-bold text-lg mb-2">Sources:</h4>
+        <ul className="list-disc list-inside text-sm text-blue-600 dark:text-blue-400">
+          {Array.from(uniqueLinks.values()).map((link, index) => (
+            <li key={index}>
+              <a href={link.uri} target="_blank" rel="noopener noreferrer" className="hover:underline">
+                {link.title || link.uri}
+              </a>
+            </li>
+          ))}
+        </ul>
+      </div>
+    );
+  };
+
   const renderJobDetails = (job: Job) => (
     <div className="p-6 h-full flex flex-col animate-fade-in">
       <div className="flex justify-between items-start">
@@ -131,6 +178,7 @@ const JobFinder: React.FC = () => {
         <div className="prose prose-sm dark:prose-invert max-w-none">
             {formattedMarkdown(job.description)}
         </div>
+        {renderGroundingLinks(job.grounding)}
       </div>
       <div className="mt-6 border-t dark:border-gray-700 pt-4 flex gap-3">
         {job.sourceUrl && (
@@ -161,10 +209,11 @@ const JobFinder: React.FC = () => {
               <option>On-site</option>
           </select>
         </div>
-        <div className="mt-4">
+        <div className="mt-4 flex items-center justify-between">
             <button onClick={() => setShowAdvanced(!showAdvanced)} className="text-sm font-semibold text-blue-600">
                 {showAdvanced ? 'Hide' : 'Show'} Advanced Filters
             </button>
+            {/* Removed Maps Grounding checkbox */}
         </div>
         {showAdvanced && (
             <div className="mt-4 grid grid-cols-1 md:grid-cols-3 gap-4 animate-fade-in">
@@ -178,8 +227,9 @@ const JobFinder: React.FC = () => {
                 <input name="skills" value={filters.skills} onChange={handleFilterChange} placeholder="Required Skills (e.g., Python, SQL)" className="p-3 border rounded-lg bg-white dark:bg-gray-700" />
             </div>
         )}
+        {/* Removed geolocation status messages */}
         <div className="mt-4 flex justify-end gap-2">
-            <button onClick={() => setFilters(initialFilters)} className="bg-gray-500 hover:bg-gray-600 text-white font-bold py-3 px-6 rounded-lg">Clear</button>
+            <button onClick={() => { setFilters(initialFilters); }} className="bg-gray-500 hover:bg-gray-600 text-white font-bold py-3 px-6 rounded-lg">Clear</button>
             <button onClick={handleSearch} disabled={loading} className="bg-blue-600 hover:bg-blue-700 text-white font-bold py-3 px-6 rounded-lg disabled:opacity-50">
               {loading ? <LoadingSpinner className="w-6 h-6" /> : 'Search'}
             </button>
@@ -199,8 +249,9 @@ const JobFinder: React.FC = () => {
                 className={`p-4 rounded-lg cursor-pointer transition-colors border-2 ${selectedJob?.id === job.id ? 'bg-blue-100 dark:bg-blue-900/50 border-blue-500' : 'bg-gray-50 dark:bg-gray-700/50 border-transparent hover:border-blue-400'}`}>
                 <h4 className="font-bold">{job.title}</h4>
                 <p className="text-sm text-gray-600 dark:text-gray-400">{job.company}</p>
-                <div className="text-xs text-gray-500 dark:text-gray-500 mt-1 flex justify-between">
-                  <span>{job.location}</span>
+                <div className="text-xs text-gray-500 dark:text-gray-500 mt-1 flex items-center justify-between">
+                  <span className="flex items-center gap-1"><LocationMarkerIcon className="w-3 h-3"/>{job.location}</span>
+                  {job.workModel && <span className="flex items-center gap-1"><BriefcaseIcon className="w-3 h-3"/>{job.workModel}</span>}
                   <span className="font-semibold">{job.datePosted}</span>
                 </div>
               </li>

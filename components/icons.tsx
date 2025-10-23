@@ -1,4 +1,3 @@
-
 import React from 'react';
 
 export const BriefcaseIcon: React.FC<{ className?: string }> = ({ className }) => (
@@ -66,5 +65,44 @@ export const LocationMarkerIcon: React.FC<{ className?: string }> = ({ className
   <svg className={className} xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor">
     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M17.657 16.657L13.414 20.9a1.998 1.998 0 01-2.827 0l-4.244-4.243a8 8 0 1111.314 0z" />
     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 11a3 3 0 11-6 0 3 3 0 016 0z" />
+  </svg>
+);
+
+// REMOVED: VideoIcon as it is no longer needed after removing VideoStudio module.
+// export const VideoIcon: React.FC<{ className?: string }> = ({ className }) => (
+//   <svg className={className} xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+//     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 10l4.553-2.276A1 1 0 0121 8.618v6.764a1 1 0 01-1.447.894L15 14M5 18h8a2 2 0 002-2V8a2 2 0 00-2-2H5a2 2 0 00-2 2v8a2 2 0 002 2z" />
+//   </svg>
+// );
+
+export const SpeakerIcon: React.FC<{ className?: string; filled?: boolean }> = ({ className, filled }) => (
+  <svg className={className} xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill={filled ? "currentColor" : "none"} stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+    <path d="M11 5L6 9H2v6h4l5 4V5z"></path>
+    {filled ? (
+      <>
+        <path d="M19.07 4.93a10 10 0 010 14.14"></path>
+        <path d="M15.54 8.46a5 5 0 010 7.07"></path>
+      </>
+    ) : (
+      <line x1="17" y1="8" x2="21" y2="16"></line>
+    )}
+  </svg>
+);
+
+export const ListUlIcon: React.FC<{ className?: string }> = ({ className }) => (
+  <svg className={className} xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 6h16M4 12h16M4 18h16" />
+  </svg>
+);
+
+export const CheckSquareIcon: React.FC<{ className?: string; filled?: boolean }> = ({ className, filled }) => (
+  <svg className={className} xmlns="http://www.w3.org/2000/svg" fill={filled ? "currentColor" : "none"} viewBox="0 0 24 24" stroke="currentColor">
+    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" />
+  </svg>
+);
+
+export const PencilIcon: React.FC<{ className?: string }> = ({ className }) => (
+  <svg className={className} xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15.232 5.232l3.536 3.536m-2.036-5.036a2.5 2.5 0 113.536 3.536L6.5 21.036H3v-3.5L15.232 5.232z" />
   </svg>
 );
