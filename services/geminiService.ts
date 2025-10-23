@@ -11,11 +11,25 @@ export interface FindJobsFilters {
   skills: string;
 }
 
-// List of known paywalled domains to filter out from sources
-export const KNOWN_PAYWALLED_DOMAINS = [
+// List of domains to avoid as primary sources (paywalls, generic search results, etc.)
+export const DOMAINS_TO_AVOID_AS_PRIMARY_SOURCE = [
   'remoterocketship.com', // Example paywalled site
-  // Add other paywalled domains as needed
+  'ziprecruiter.com',     // Common paywalled site
+  'google.com/search',    // Generic Google search results
+  'aistudio.google.com',  // Placeholder/internal links
+  // Add other domains to avoid as needed
 ];
+
+// Helper to extract domain from URL
+export const getDomain = (url: string) => {
+  try {
+      const hostname = new URL(url).hostname;
+      // Remove 'www.' prefix if present
+      return hostname.startsWith('www.') ? hostname.substring(4) : hostname;
+  } catch (e) {
+      return ''; // Invalid URL
+  }
+};
 
 // Helper to encode Uint8Array to base64
 function encode(bytes: Uint8Array) {
@@ -99,26 +113,34 @@ export const findJobs = async (filters: FindJobsFilters, resume: ResumeContent |
         prompt += `- Most Recent Role: ${resume.experience[0].title} at ${resume.experience[0].company}\n`;
       }
   }
-  prompt += "\nReturn a list of 5 job postings. For each job, provide a title, company, location, a brief description, and if possible, work model, date posted, and a source URL.";
+  prompt += "\nReturn a list of 5 job postings. For each job, provide a title, company, location, a **full, comprehensive, and essential description, capturing ALL available and essential details without any summarization or truncation**, and if possible, work model and date posted. DO NOT provide a source URL in this response.";
 
-  // FIX: Declare tools with the correct type to allow both GoogleSearchTool and GoogleMapsTool.
   const tools: Tool[] = [{ googleSearch: {} }];
-  // Removed toolConfig as Maps grounding is disabled
 
   const response = await ai.models.generateContent({
     model: 'gemini-2.5-flash',
     contents: prompt,
     config: {
       tools: tools,
-      // Removed toolConfig: toolConfig
     },
+  });
+
+  // Extract grounding chunks once from the main response
+  const globalGroundingChunks = response.candidates?.[0]?.groundingMetadata?.groundingChunks as GroundingChunk[] || [];
+
+  // Filter out undesirable domains from the global grounding chunks
+  const filteredGlobalGrounding = globalGroundingChunks.filter(chunk => {
+      if ('web' in chunk && chunk.web?.uri) {
+          return !DOMAINS_TO_AVOID_AS_PRIMARY_SOURCE.some(domain => getDomain(chunk.web.uri).includes(domain));
+      }
+      return false; // Only keep valid web chunks
   });
 
   // Since the response is grounded text and not guaranteed JSON, we'll parse it with another LLM call.
   // This is a common pattern for extracting structured data from unstructured grounded responses.
   const extractionResponse = await ai.models.generateContent({
     model: 'gemini-2.5-flash',
-    contents: `Extract the job postings from the following text into a clean JSON array. Each object should have 'title', 'company', 'location', 'description', 'workModel', 'datePosted', and 'sourceUrl'. If a field is not present, omit it.
+    contents: `Extract the job postings from the following text into a clean JSON array. Each object should have 'title', 'company', 'location', 'description', 'workModel', 'datePosted'. If a field is not present, omit it. The 'description' should be as **comprehensive and detailed as possible, capturing ALL essential information.**
     
     Text:
     ---
@@ -137,7 +159,7 @@ export const findJobs = async (filters: FindJobsFilters, resume: ResumeContent |
             location: { type: Type.STRING },
             description: { type: Type.STRING },
             workModel: { type: Type.STRING },
-            datePosted: { type: Type.STRING }
+            datePosted: { type: Type.STRING },
           },
           required: ['title', 'company', 'location', 'description']
         }
@@ -145,12 +167,108 @@ export const findJobs = async (filters: FindJobsFilters, resume: ResumeContent |
     }
   });
 
-  const groundingChunks = response.candidates?.[0]?.groundingMetadata?.groundingChunks as GroundingChunk[] || [];
-  const jobs: Job[] = JSON.parse(extractionResponse.text).map((job: any, index: number) => ({
-    ...job,
-    id: `job-${Date.now()}-${index}`,
-    grounding: groundingChunks,
-  }));
+  const extractedJobs = JSON.parse(extractionResponse.text);
+
+  const jobs: Job[] = extractedJobs.map((job: any, index: number) => {
+    const jobTitleLower = (job.title || '').toLowerCase();
+    const companyNameLower = (job.company || '').toLowerCase();
+    const jobKeywords = jobTitleLower.split(/\s+/).filter(Boolean); // Tokenize job title
+    const companyKeywords = companyNameLower.split(/\s+/).filter(Boolean); // Tokenize company name
+
+    // Heuristic: filter grounding chunks to be specific to this job
+    let jobSpecificGrounding = filteredGlobalGrounding.filter(chunk => {
+        if ('web' in chunk && chunk.web?.uri) {
+            const uriLower = chunk.web.uri.toLowerCase();
+            const titleLower = (chunk.web.title || '').toLowerCase();
+            
+            // Check for multiple keyword matches in URI or title
+            const hasJobTitleKeywords = jobKeywords.some(keyword => uriLower.includes(keyword) || titleLower.includes(keyword));
+            const hasCompanyKeywords = companyKeywords.some(keyword => uriLower.includes(keyword) || titleLower.includes(keyword));
+
+            // Also prioritize if the domain of the chunk matches the company name (e.g., "google.com" for Google)
+            const domainMatchesCompany = companyNameLower && getDomain(chunk.web.uri).includes(companyNameLower.replace(/\s/g, '').split(' ')[0]);
+
+            return (hasJobTitleKeywords && hasCompanyKeywords) || domainMatchesCompany;
+        }
+        return false; 
+    });
+
+    // Deduplicate job-specific grounding links by URI
+    const uniqueJobGrounding = Array.from(new Map(jobSpecificGrounding.map(chunk => {
+        if ('web' in chunk && chunk.web?.uri) {
+            return [chunk.web.uri, chunk];
+        }
+        return [null, null]; // Should not happen with current filter
+    })).values()).filter(Boolean) as GroundingChunk[];
+
+    // Determine the best sourceUrl from the unique job-specific grounding
+    let finalSourceUrl: string | undefined;
+
+    if (uniqueJobGrounding.length > 0) {
+        // Prioritize:
+        // 1. URLs containing common job posting paths/keywords
+        // 2. URLs that are company career pages (e.g., 'careers.company.com')
+        // 3. URLs with more keyword matches
+        uniqueJobGrounding.sort((a, b) => {
+            const uriA = ('web' in a && a.web?.uri) ? a.web.uri.toLowerCase() : '';
+            const titleA = ('web' in a && a.web?.title) ? a.web.title.toLowerCase() : '';
+            const uriB = ('web' in b && b.web?.uri) ? b.web.uri.toLowerCase() : '';
+            const titleB = ('web' in b && b.web?.title) ? b.web.title.toLowerCase() : '';
+
+            let scoreA = 0;
+            let scoreB = 0;
+
+            // Boost for job-specific path segments
+            if (uriA.includes('/job/') || uriA.includes('/careers/') || uriA.includes('/posting/') || uriA.includes('/apply')) scoreA += 10;
+            if (uriB.includes('/job/') || uriB.includes('/careers/') || uriB.includes('/posting/') || uriB.includes('/apply')) scoreB += 10;
+
+            // Boost for company career subdomain
+            if (getDomain(uriA).startsWith('careers.') || getDomain(uriA).startsWith('jobs.')) scoreA += 5;
+            if (getDomain(uriB).startsWith('careers.') || getDomain(uriB).startsWith('jobs.')) scoreB += 5;
+
+            // Score based on keyword matches in URI and title
+            const calculateKeywordScore = (text: string, keywords: string[]) => keywords.reduce((sum, keyword) => sum + (text.includes(keyword) ? 1 : 0), 0);
+            scoreA += calculateKeywordScore(uriA + titleA, [...jobKeywords, ...companyKeywords]);
+            scoreB += calculateKeywordScore(uriB + titleB, [...jobKeywords, ...companyKeywords]);
+            
+            return scoreB - scoreA; // Descending score
+        });
+        
+        if ('web' in uniqueJobGrounding[0] && uniqueJobGrounding[0].web?.uri) {
+            finalSourceUrl = uniqueJobGrounding[0].web.uri;
+        }
+    }
+
+    // Fallback: If no job-specific grounding yields a sourceUrl, try to find a relevant one from global filtered grounding
+    // This is to ensure a link is almost always present if any non-paywalled source was identified by Gemini.
+    if (!finalSourceUrl && filteredGlobalGrounding.length > 0) {
+        let fallbackCandidate: GroundingChunk | undefined;
+        // Try to find a global grounding chunk that at least contains the company name
+        fallbackCandidate = filteredGlobalGrounding.find(chunk => {
+            if ('web' in chunk && chunk.web?.uri) {
+                const uriLower = chunk.web.uri.toLowerCase();
+                const titleLower = (chunk.web.title || '').toLowerCase();
+                return companyKeywords.some(keyword => uriLower.includes(keyword) || titleLower.includes(keyword));
+            }
+            return false;
+        });
+        // If still no candidate, just take the first global filtered one
+        if (!fallbackCandidate && filteredGlobalGrounding.length > 0) {
+            fallbackCandidate = filteredGlobalGrounding[0];
+        }
+        if (fallbackCandidate && 'web' in fallbackCandidate && fallbackCandidate.web?.uri) {
+            finalSourceUrl = fallbackCandidate.web.uri;
+        }
+    }
+
+
+    return {
+        ...job,
+        id: `job-${Date.now()}-${index}`, // Ensure unique ID for each job
+        sourceUrl: finalSourceUrl, // Assign the refined source URL
+        grounding: uniqueJobGrounding, // Assign the filtered and unique, job-specific grounding
+    };
+  });
 
   return jobs;
 };
@@ -177,7 +295,7 @@ export const analyzeJobUrl = async (url: string): Promise<Partial<Job>> => {
     - Job Title
     - Company Name
     - Location
-    - A concise job description (summarize the key responsibilities and qualifications)
+    - A **full, comprehensive, and essential job description, capturing ALL available and essential details without any summarization or truncation**
     - Work Model (e.g., Remote, Hybrid, On-site)
     `;
 
@@ -191,7 +309,7 @@ export const analyzeJobUrl = async (url: string): Promise<Partial<Job>> => {
 
     const extractionResponse = await ai.models.generateContent({
         model: 'gemini-2.5-flash',
-        contents: `From the following text, extract the job details into a JSON object.
+        contents: `From the following text, extract the job details into a JSON object. The 'description' should be as **comprehensive and detailed as possible, capturing ALL essential information.**
         Text:
         ---
         ${response.text}
@@ -205,23 +323,84 @@ export const analyzeJobUrl = async (url: string): Promise<Partial<Job>> => {
                     company: { type: Type.STRING },
                     location: { type: Type.STRING },
                     description: { type: Type.STRING },
-                    workModel: { type: Type.STRING }
+                    workModel: { type: Type.STRING },
                 },
                 required: ['title', 'company', 'location', 'description']
             }
         }
     });
     
-    const groundingChunks = response.candidates?.[0]?.groundingMetadata?.groundingChunks as GroundingChunk[] || [];
+    const globalGroundingChunks = response.candidates?.[0]?.groundingMetadata?.groundingChunks as GroundingChunk[] || [];
 
-    return { ...JSON.parse(extractionResponse.text), sourceUrl: url, grounding: groundingChunks };
+    // Filter out undesirable domains from the global grounding chunks
+    const filteredGrounding = globalGroundingChunks.filter(chunk => {
+        if ('web' in chunk && chunk.web?.uri) {
+            return !DOMAINS_TO_AVOID_AS_PRIMARY_SOURCE.some(domain => getDomain(chunk.web.uri).includes(domain));
+        }
+        return false; // Only keep valid web chunks
+    });
+
+    // Deduplicate grounding links by URI
+    const uniqueGrounding = Array.from(new Map(filteredGrounding.map(chunk => {
+        if ('web' in chunk && chunk.web?.uri) {
+            return [chunk.web.uri, chunk];
+        }
+        return [null, null];
+    })).values()).filter(Boolean) as GroundingChunk[];
+
+    const extractedData = JSON.parse(extractionResponse.text);
+    let finalSourceUrl: string | undefined;
+
+    // 1. Prioritize the original input URL if it's valid and not in the "to avoid" list
+    if (url && getDomain(url) !== '' && !DOMAINS_TO_AVOID_AS_PRIMARY_SOURCE.some(domain => getDomain(url).includes(domain))) {
+        finalSourceUrl = url;
+    } else {
+        // 2. If original URL is not suitable, try to find a better one from grounding
+        if (uniqueGrounding.length > 0) {
+            const jobTitleLower = (extractedData.title || '').toLowerCase();
+            const companyNameLower = (extractedData.company || '').toLowerCase();
+            const jobKeywords = jobTitleLower.split(/\s+/).filter(Boolean);
+            const companyKeywords = companyNameLower.split(/\s+/).filter(Boolean);
+
+            uniqueGrounding.sort((a, b) => {
+                const uriA = ('web' in a && a.web?.uri) ? a.web.uri.toLowerCase() : '';
+                const titleA = ('web' in a && a.web?.title) ? a.web.title.toLowerCase() : '';
+                const uriB = ('web' in b && b.web?.uri) ? b.web.uri.toLowerCase() : '';
+                const titleB = ('web' in b && b.web?.title) ? b.web.title.toLowerCase() : '';
+
+                let scoreA = 0;
+                let scoreB = 0;
+
+                // Boost for job-specific path segments
+                if (uriA.includes('/job/') || uriA.includes('/careers/') || uriA.includes('/posting/') || uriA.includes('/apply')) scoreA += 10;
+                if (uriB.includes('/job/') || uriB.includes('/careers/') || uriB.includes('/posting/') || uriB.includes('/apply')) scoreB += 10;
+
+                // Boost for company career subdomain
+                if (getDomain(uriA).startsWith('careers.') || getDomain(uriA).startsWith('jobs.')) scoreA += 5;
+                if (getDomain(uriB).startsWith('careers.') || getDomain(uriB).startsWith('jobs.')) scoreB += 5;
+
+                // Score based on keyword matches in URI and title
+                const calculateKeywordScore = (text: string, keywords: string[]) => keywords.reduce((sum, keyword) => sum + (text.includes(keyword) ? 1 : 0), 0);
+                scoreA += calculateKeywordScore(uriA + titleA, [...jobKeywords, ...companyKeywords]);
+                scoreB += calculateKeywordScore(uriB + titleB, [...jobKeywords, ...companyKeywords]);
+
+                return scoreB - scoreA; // Descending score
+            });
+
+            if ('web' in uniqueGrounding[0] && uniqueGrounding[0].web?.uri) {
+                finalSourceUrl = uniqueGrounding[0].web.uri;
+            }
+        }
+    }
+
+    return { ...extractedData, sourceUrl: finalSourceUrl, grounding: uniqueGrounding };
 };
 
 // For analyzing job from raw text
 export const analyzeJobText = async (text: string): Promise<Partial<Job>> => {
     const response = await ai.models.generateContent({
         model: 'gemini-2.5-flash',
-        contents: `From the following job description text, extract the key details into a JSON object.
+        contents: `From the following job description text, extract the key details into a JSON object. The 'description' should be as **comprehensive and detailed as possible, capturing ALL essential information.**
         Text:
         ---
         ${text}
@@ -235,12 +414,13 @@ export const analyzeJobText = async (text: string): Promise<Partial<Job>> => {
                     company: { type: Type.STRING },
                     location: { type: Type.STRING },
                     description: { type: Type.STRING },
-                    workModel: { type: Type.STRING }
+                    workModel: { type: Type.STRING },
                 },
                 required: ['title', 'company', 'location', 'description']
             }
         }
     });
+    // No grounding chunks or sourceUrl extraction from text input directly
     return JSON.parse(response.text);
 };
 

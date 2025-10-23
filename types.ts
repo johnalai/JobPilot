@@ -71,7 +71,7 @@ export interface Job {
   grounding?: GroundingChunk[];
 }
 
-export type ApplicationStatus = 'Not Started' | 'Draft' | 'Submitted' | 'Interviewing' | 'Offer' | 'Rejected';
+export type ApplicationStatus = 'Not Started' | 'Draft' | 'Applied' | 'Submitted' | 'Interviewing' | 'Offer' | 'Rejected';
 
 export interface Application {
   id: string;

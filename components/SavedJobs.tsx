@@ -2,7 +2,7 @@ import React, { useState } from 'react';
 import { useAppContext } from '../context/AppContext';
 import { Job, WebGroundingChunk } from '../types';
 import { BookmarkIcon, LocationMarkerIcon, CalendarIcon, BriefcaseIcon, LoadingSpinner } from './icons';
-import { analyzeJobUrl, analyzeJobText, KNOWN_PAYWALLED_DOMAINS } from '../services/geminiService';
+import { analyzeJobUrl, analyzeJobText, DOMAINS_TO_AVOID_AS_PRIMARY_SOURCE, getDomain } from '../services/geminiService';
 
 const SavedJobs: React.FC = () => {
   const {
@@ -63,6 +63,8 @@ const SavedJobs: React.FC = () => {
             company: 'Unknown Company',
             location: 'Not Specified',
             description: 'No description provided.',
+            sourceUrl: partialJob.sourceUrl || (modalMode === 'link' ? modalInput : undefined), // Ensure sourceUrl is preserved/set
+            grounding: partialJob.grounding, // Ensure grounding is preserved
             ...partialJob,
         };
         setSavedJobs(prev => [newJob, ...prev]);
@@ -93,16 +95,6 @@ const SavedJobs: React.FC = () => {
       });
   };
 
-  // Helper function to extract domain from URL
-  const getDomain = (url: string) => {
-    try {
-        const hostname = new URL(url).hostname;
-        // Remove 'www.' prefix if present
-        return hostname.startsWith('www.') ? hostname.substring(4) : hostname;
-    } catch (e) {
-        return ''; // Invalid URL
-    }
-  };
 
   const renderGroundingLinks = (groundingChunks?: Job['grounding']) => {
     if (!groundingChunks || groundingChunks.length === 0) return null;
@@ -119,8 +111,8 @@ const SavedJobs: React.FC = () => {
         title = chunk.web.title || uri;
       }
       
-      // Filter out paywalled domains
-      if (uri && !KNOWN_PAYWALLED_DOMAINS.includes(getDomain(uri))) {
+      // Filter out undesirable domains (already done in geminiService, but defensive check)
+      if (uri && !DOMAINS_TO_AVOID_AS_PRIMARY_SOURCE.some(domain => getDomain(uri).includes(domain))) {
         uniqueLinks.set(uri, { uri, title });
       }
     });
@@ -159,13 +151,6 @@ const SavedJobs: React.FC = () => {
           <BookmarkIcon className="w-6 h-6 text-yellow-500" filled={true} />
         </button>
       </div>
-      <div className="mt-6 flex-grow overflow-y-auto pr-2">
-        <h4 className="font-bold text-lg mb-2">Job Description</h4>
-        <div className="prose prose-sm dark:prose-invert max-w-none">
-            {formattedMarkdown(job.description)}
-        </div>
-        {renderGroundingLinks(job.grounding)}
-      </div>
       <div className="mt-6 border-t dark:border-gray-700 pt-4 flex gap-3">
         {job.sourceUrl && (
           <a href={job.sourceUrl} target="_blank" rel="noopener noreferrer" className="flex-1 text-center bg-gray-600 hover:bg-gray-700 text-white font-bold py-3 px-4 rounded-lg">
@@ -175,6 +160,13 @@ const SavedJobs: React.FC = () => {
         <button onClick={() => handleApply(job)} className="flex-1 bg-blue-600 hover:bg-blue-700 text-white font-bold py-3 px-4 rounded-lg">
           Generate Application
         </button>
+      </div>
+      <div className="mt-6 flex-grow overflow-y-auto pr-2">
+        <h4 className="font-bold text-lg mb-2">Job Description</h4>
+        <div className="prose prose-sm dark:prose-invert max-w-none">
+            {formattedMarkdown(job.description)}
+        </div>
+        {renderGroundingLinks(job.grounding)}
       </div>
     </div>
   );
@@ -203,8 +195,14 @@ const SavedJobs: React.FC = () => {
                      <div className="text-xs text-gray-500 dark:text-gray-500 mt-1 flex items-center justify-between">
                       <span className="flex items-center gap-1"><LocationMarkerIcon className="w-3 h-3"/>{job.location}</span>
                       {job.workModel && <span className="flex items-center gap-1"><BriefcaseIcon className="w-3 h-3"/>{job.workModel}</span>}
-                      <span className="font-semibold">{job.datePosted}</span>
                     </div>
+                    {/* Display the full description */}
+                    {job.description && (
+                      <p className="text-sm text-gray-700 dark:text-gray-300 mt-2 line-clamp-6">
+                        {job.description}
+                      </p>
+                    )}
+                    {job.datePosted && <p className="text-xs text-gray-500 dark:text-gray-500 mt-1">{job.datePosted}</p>}
                   </li>
                 ))}
               </ul>

@@ -35,15 +35,13 @@ interface AppContextType {
   chatHistory: Message[];
   setChatHistory: React.Dispatch<React.SetStateAction<Message[]>>;
 
-  // REMOVED: New states for Video Studio
-  // uploadedVideo: { uri: string, mimeType: string } | null; // For analysis from user input
-  // setUploadedVideo: React.Dispatch<React.SetStateAction<{ uri: string, mimeType: string } | null>>;
-  // generatedVideoUri: { uri: string, mimeType: string } | null; // From Veo generation
-  // setGeneratedVideoUri: React.Dispatch<React.SetStateAction<{ uri: string, mimeType: string } | null>>;
-
   // New state for Task Manager
   tasks: Task[];
   setTasks: React.Dispatch<React.SetStateAction<Task[]>>;
+
+  // New state for frequently searched keywords
+  frequentlySearchedKeywords: string[];
+  setFrequentlySearchedKeywords: React.Dispatch<React.SetStateAction<string[]>>;
 }
 
 const AppContext = createContext<AppContextType | undefined>(undefined);
@@ -117,16 +115,22 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     }
   });
 
+  // New state for frequently searched keywords
+  const [frequentlySearchedKeywords, setFrequentlySearchedKeywords] = useState<string[]>(() => {
+    try {
+      const saved = localStorage.getItem('frequentlySearchedKeywords');
+      return saved ? JSON.parse(saved) : [];
+    } catch (e) {
+      console.error("Failed to load frequently searched keywords from localStorage, starting fresh.", e);
+      return [];
+    }
+  });
+
 
   // FIX: Add state for generationContext and remove unused selectedJobForApplication.
   const [generationContext, setGenerationContext] = useState<GenerationContext | null>(null);
   const [selectedJobForViewing, setSelectedJobForViewing] = useState<Job | null>(null);
   const [selectedApplicationForInterview, setSelectedApplicationForInterview] = useState<Application | null>(null);
-
-  // REMOVED: New states for Video Studio
-  // const [uploadedVideo, setUploadedVideo] = useState<{ uri: string, mimeType: string } | null>(null);
-  // const [generatedVideoUri, setGeneratedVideoUri] = useState<{ uri: string, mimeType: string } | null>(null);
-
 
   useEffect(() => {
     localStorage.setItem('resumes', JSON.stringify(resumes));
@@ -156,6 +160,11 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     localStorage.setItem('tasks', JSON.stringify(tasks));
   }, [tasks]);
 
+  useEffect(() => {
+    localStorage.setItem('frequentlySearchedKeywords', JSON.stringify(frequentlySearchedKeywords));
+  }, [frequentlySearchedKeywords]);
+
+
   const value = {
     view,
     setView,
@@ -175,12 +184,10 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     setSelectedApplicationForInterview,
     chatHistory,
     setChatHistory,
-    // REMOVED: uploadedVideo,
-    // REMOVED: setUploadedVideo,
-    // REMOVED: generatedVideoUri,
-    // REMOVED: setGeneratedVideoUri,
     tasks, // Add tasks to context value
     setTasks, // Add setTasks to context value
+    frequentlySearchedKeywords, // Add to context value
+    setFrequentlySearchedKeywords, // Add to context value
   };
 
   return <AppContext.Provider value={value}>{children}</AppContext.Provider>;
