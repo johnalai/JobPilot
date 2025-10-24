@@ -1,7 +1,5 @@
-
 import React from 'react';
 import { BriefcaseIcon, ResumeIcon } from './icons';
-// FIX: Use relative path for AppContext import.
 import { useAppContext } from '../context/AppContext';
 
 const Dashboard: React.FC = () => {
@@ -17,7 +15,11 @@ const Dashboard: React.FC = () => {
 
       <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
         {/* Resume Status Card */}
-        <div className="bg-white dark:bg-gray-800 p-6 rounded-xl shadow-lg hover:shadow-xl transition-shadow duration-300">
+        <div 
+          className="bg-white dark:bg-gray-800 p-6 rounded-xl shadow-lg hover:shadow-xl transition-shadow duration-300"
+          data-step="dashboard-resumes"
+          data-highlight="true"
+        >
           <div className="flex items-center space-x-4">
             <div className="p-3 bg-blue-100 dark:bg-blue-900 rounded-full">
               <ResumeIcon className="w-8 h-8 text-blue-600 dark:text-blue-400" />
@@ -41,7 +43,11 @@ const Dashboard: React.FC = () => {
         </div>
 
         {/* Applications Overview Card */}
-        <div className="bg-white dark:bg-gray-800 p-6 rounded-xl shadow-lg hover:shadow-xl transition-shadow duration-300">
+        <div 
+          className="bg-white dark:bg-gray-800 p-6 rounded-xl shadow-lg hover:shadow-xl transition-shadow duration-300"
+          data-step="dashboard-applications"
+          data-highlight="true"
+        >
           <div className="flex items-center space-x-4">
             <div className="p-3 bg-indigo-100 dark:bg-indigo-900 rounded-full">
               <BriefcaseIcon className="w-8 h-8 text-indigo-600 dark:text-indigo-400" />

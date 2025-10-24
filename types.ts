@@ -1,3 +1,5 @@
+import React from 'react';
+
 // Moved from geminiService.ts to resolve circular dependency
 export interface WebGroundingChunk {
   web: {
@@ -38,6 +40,12 @@ export interface ResumeContent {
   skills: string[];
   experience: Experience[];
   education: Education[];
+  contactInfo?: { // New: Structured contact information
+    name: string;
+    address: string;
+    phone: string;
+    email: string;
+  };
 }
 
 export interface ResumeVersion {
@@ -84,6 +92,9 @@ export interface Application {
   atsScore?: {
     score: number;
     feedback: string;
+    missingKeywords?: string[]; // New: Keywords from job not in resume
+    integrationSuggestions?: string[]; // New: How to integrate missing keywords
+    jargonCheck?: string; // New: Feedback on jargon usage
   };
 }
 

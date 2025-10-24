@@ -1,7 +1,7 @@
 import React, { useState } from 'react';
 import { useAppContext } from '../context/AppContext';
 import { Job, WebGroundingChunk } from '../types';
-import { BookmarkIcon, LocationMarkerIcon, CalendarIcon, BriefcaseIcon, LoadingSpinner } from './icons';
+import { BookmarkIcon, LocationMarkerIcon, CalendarIcon, BriefcaseIcon, LoadingSpinner, ListUlIcon, GridIcon } from './icons';
 import { analyzeJobUrl, analyzeJobText, DOMAINS_TO_AVOID_AS_PRIMARY_SOURCE, getDomain } from '../services/geminiService';
 
 const SavedJobs: React.FC = () => {
@@ -12,10 +12,13 @@ const SavedJobs: React.FC = () => {
     setGenerationContext,
     resumes,
     defaultResumeId,
+    setError, // Import global setError
   } = useAppContext();
 
   const [selectedJob, setSelectedJob] = useState<Job | null>(savedJobs.length > 0 ? savedJobs[0] : null);
-  const [error, setError] = useState<string | null>(null);
+  // Removed local error state, now using global setError
+  // const [error, setError] = useState<string | null>(null);
+  const [viewMode, setViewMode] = useState<'list' | 'grid'>('list'); // New state for view mode
   
   // State for the manual add modal
   const [isModalOpen, setIsModalOpen] = useState(false);
@@ -26,17 +29,26 @@ const SavedJobs: React.FC = () => {
 
   const defaultResume = resumes.find(r => r.id === defaultResumeId);
 
-  const handleUnsaveJob = (jobToUnsave: Job) => {
-    setSavedJobs(prev => prev.filter(job => job.id !== jobToUnsave.id));
-    if (selectedJob?.id === jobToUnsave.id) {
-        const nextJob = savedJobs.find(j => j.id !== jobToUnsave.id) || null;
-        setSelectedJob(nextJob);
+  // FIX: Refactor handleUnsaveJob into handleToggleSaveJob to be consistent with JobFinder and handle both save/unsave
+  const handleToggleSaveJob = (jobToToggle: Job) => {
+    const isSaved = savedJobs.some(saved => saved.id === jobToToggle.id);
+    if (isSaved) {
+      // Unsave the job
+      setSavedJobs(prev => prev.filter(job => job.id !== jobToToggle.id));
+      if (selectedJob?.id === jobToToggle.id) {
+          // If the unsaved job was selected, clear selection or pick next one
+          const nextJob = savedJobs.filter(j => j.id !== jobToToggle.id)[0] || null;
+          setSelectedJob(nextJob);
+      }
+    } else {
+      // Save the job (though this component is for *saved* jobs, this function is flexible)
+      setSavedJobs(prev => [...prev, jobToToggle]);
     }
   };
   
   const handleApply = (job: Job) => {
     if (!defaultResume) {
-      setError("Please set a default resume in the Resume Hub before generating an application.");
+      setError("Please set a default resume in the Resume Hub before generating an application."); // Use global setError
       return;
     }
     setGenerationContext({ job, baseResume: defaultResume });
@@ -50,6 +62,8 @@ const SavedJobs: React.FC = () => {
     }
     setIsParsing(true);
     setModalError('');
+    setError(null); // Clear global error for AI service issues
+
     try {
         const partialJob = modalMode === 'link'
             ? await analyzeJobUrl(modalInput)
@@ -74,6 +88,7 @@ const SavedJobs: React.FC = () => {
 
     } catch (e: any) {
         setModalError(e.message || 'Failed to parse job details.');
+        setError(e.message || 'Failed to parse job details (AI service error).'); // Set global error
     } finally {
         setIsParsing(false);
     }
@@ -147,7 +162,7 @@ const SavedJobs: React.FC = () => {
             <p className="flex items-center gap-2"><CalendarIcon className="w-4 h-4" /> {job.datePosted || 'Not Available'}</p>
           </div>
         </div>
-        <button onClick={() => handleUnsaveJob(job)} title="Unsave Job" className="p-2 rounded-full hover:bg-gray-200 dark:hover:bg-gray-700">
+        <button onClick={(e) => { e.stopPropagation(); handleToggleSaveJob(job); }} title="Unsave Job" className="p-2 rounded-full hover:bg-gray-200 dark:hover:bg-gray-700">
           <BookmarkIcon className="w-6 h-6 text-yellow-500" filled={true} />
         </button>
       </div>
@@ -175,37 +190,99 @@ const SavedJobs: React.FC = () => {
     <div className="max-w-7xl mx-auto">
       <h2 className="text-3xl font-bold text-gray-800 dark:text-white">Saved Jobs</h2>
       <p className="mt-2 text-lg text-gray-600 dark:text-gray-400">Review and apply to jobs you've saved.</p>
-      {error && <p className="text-red-500 mt-4 text-center">{error}</p>}
+      {/* Removed local error display */}
+      {/* {error && <p className="text-red-500 mt-4 text-center">{error}</p>} */}
 
       <div className="mt-8 grid grid-cols-1 md:grid-cols-3 gap-8" style={{ minHeight: '60vh' }}>
         <div className="md:col-span-1 bg-white dark:bg-gray-800 p-4 rounded-xl shadow-lg h-full flex flex-col">
-          <button onClick={() => setIsModalOpen(true)} className="w-full mb-4 bg-blue-600 hover:bg-blue-700 text-white font-bold py-2 px-4 rounded-lg">
-            + Add Job Manually
-          </button>
+          <div className="flex justify-between items-center mb-4">
+            <button onClick={() => setIsModalOpen(true)} className="bg-blue-600 hover:bg-blue-700 text-white font-bold py-2 px-4 rounded-lg text-sm">
+              + Add Job Manually
+            </button>
+            <div className="flex gap-2">
+              <button
+                onClick={() => setViewMode('list')}
+                className={`p-2 rounded-full ${viewMode === 'list' ? 'bg-blue-100 dark:bg-blue-900/50 text-blue-600' : 'text-gray-500 hover:bg-gray-100 dark:hover:bg-gray-700'}`}
+                title="List View"
+              >
+                <ListUlIcon className="w-5 h-5" />
+              </button>
+              <button
+                onClick={() => setViewMode('grid')}
+                className={`p-2 rounded-full ${viewMode === 'grid' ? 'bg-blue-100 dark:bg-blue-900/50 text-blue-600' : 'text-gray-500 hover:bg-gray-100 dark:hover:bg-gray-700'}`}
+                title="Grid View"
+              >
+                <GridIcon className="w-5 h-5" />
+              </button>
+            </div>
+          </div>
           <div className="flex-grow overflow-y-auto">
             {savedJobs.length === 0 ? (
               <p className="text-center text-gray-500 pt-4">You have no saved jobs. Find jobs to save them.</p>
             ) : (
-              <ul className="space-y-2">
-                {savedJobs.map(job => (
-                  <li key={job.id} onClick={() => setSelectedJob(job)}
-                    className={`p-4 rounded-lg cursor-pointer transition-colors border-2 ${selectedJob?.id === job.id ? 'bg-blue-100 dark:bg-blue-900/50 border-blue-500' : 'bg-gray-50 dark:bg-gray-700/50 border-transparent hover:border-blue-400'}`}>
-                    <h4 className="font-bold">{job.title}</h4>
-                    <p className="text-sm text-gray-600 dark:text-gray-400">{job.company}</p>
-                     <div className="text-xs text-gray-500 dark:text-gray-500 mt-1 flex items-center justify-between">
-                      <span className="flex items-center gap-1"><LocationMarkerIcon className="w-3 h-3"/>{job.location}</span>
-                      {job.workModel && <span className="flex items-center gap-1"><BriefcaseIcon className="w-3 h-3"/>{job.workModel}</span>}
-                    </div>
-                    {/* Display the full description */}
-                    {job.description && (
-                      <p className="text-sm text-gray-700 dark:text-gray-300 mt-2 line-clamp-6">
-                        {job.description}
-                      </p>
-                    )}
-                    {job.datePosted && <p className="text-xs text-gray-500 dark:text-gray-500 mt-1">{job.datePosted}</p>}
-                  </li>
-                ))}
-              </ul>
+              <>
+                {viewMode === 'list' ? (
+                  <ul className="space-y-2">
+                    {savedJobs.map(job => (
+                      <li key={job.id} 
+                        className={`p-4 rounded-lg cursor-pointer transition-colors border-2 ${selectedJob?.id === job.id ? 'bg-blue-100 dark:bg-blue-900/50 border-blue-500' : 'bg-gray-50 dark:bg-gray-700/50 border-transparent hover:border-blue-400'}`}>
+                        <div onClick={() => setSelectedJob(job)}> {/* Wrap details to handle selection */}
+                          <h4 className="font-bold">{job.title}</h4>
+                          <p className="text-sm text-gray-600 dark:text-gray-400">{job.company}</p>
+                          <div className="text-xs text-gray-500 dark:text-gray-500 mt-1 flex items-center justify-between">
+                            <span className="flex items-center gap-1"><LocationMarkerIcon className="w-3 h-3"/>{job.location}</span>
+                            {job.workModel && <span className="flex items-center gap-1"><BriefcaseIcon className="w-3 h-3"/>{job.workModel}</span>}
+                          </div>
+                          {job.description && (
+                            <p className="text-sm text-gray-700 dark:text-gray-300 mt-2 line-clamp-6">
+                              {job.description}
+                            </p>
+                          )}
+                          {job.datePosted && <p className="text-xs text-gray-500 dark:text-gray-500 mt-1">{job.datePosted}</p>}
+                        </div>
+                        <div className="mt-3 flex justify-end gap-2"> {/* New action buttons container */}
+                          <button onClick={(e) => { e.stopPropagation(); handleToggleSaveJob(job); }} title="Unsave Job" className="text-gray-500 hover:text-red-600 p-1 rounded-full">
+                              <BookmarkIcon className="w-5 h-5" filled={savedJobs.some(j => j.id === job.id)} />
+                          </button>
+                          <button onClick={(e) => { e.stopPropagation(); handleApply(job); }} className="bg-blue-600 hover:bg-blue-700 text-white font-bold py-1 px-3 rounded-lg text-sm">
+                              Apply
+                          </button>
+                        </div>
+                      </li>
+                    ))}
+                  </ul>
+                ) : (
+                  <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-1 xl:grid-cols-2 gap-4"> {/* Responsive grid for job cards */}
+                    {savedJobs.map(job => (
+                      <div key={job.id} 
+                        className={`p-4 rounded-lg cursor-pointer transition-colors border-2 ${selectedJob?.id === job.id ? 'bg-blue-100 dark:bg-blue-900/50 border-blue-500' : 'bg-gray-50 dark:bg-gray-700/50 border-transparent hover:border-blue-400'} flex flex-col`}>
+                        <div onClick={() => setSelectedJob(job)} className="flex-grow"> {/* Make content clickable for selection */}
+                          <h4 className="font-bold text-base">{job.title}</h4>
+                          <p className="text-sm text-gray-600 dark:text-gray-400">{job.company}</p>
+                          <div className="text-xs text-gray-500 dark:text-gray-500 mt-1 flex flex-wrap gap-x-2">
+                            <span className="flex items-center gap-1"><LocationMarkerIcon className="w-3 h-3"/>{job.location}</span>
+                            {job.workModel && <span className="flex items-center gap-1"><BriefcaseIcon className="w-3 h-3"/>{job.workModel}</span>}
+                          </div>
+                          {job.description && (
+                            <p className="text-sm text-gray-700 dark:text-gray-300 mt-2 line-clamp-3"> {/* Shorter description for grid view */}
+                              {job.description}
+                            </p>
+                          )}
+                          {job.datePosted && <p className="text-xs text-gray-500 dark:text-gray-500 mt-1">{job.datePosted}</p>}
+                        </div>
+                        <div className="mt-3 flex justify-end gap-2"> {/* Action buttons at the bottom */}
+                          <button onClick={(e) => { e.stopPropagation(); handleToggleSaveJob(job); }} title="Unsave Job" className="text-gray-500 hover:text-red-600 p-1 rounded-full">
+                              <BookmarkIcon className="w-5 h-5" filled={savedJobs.some(j => j.id === job.id)} />
+                          </button>
+                          <button onClick={(e) => { e.stopPropagation(); handleApply(job); }} className="bg-blue-600 hover:bg-blue-700 text-white font-bold py-1 px-3 rounded-lg text-sm">
+                              Apply
+                          </button>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </>
             )}
           </div>
         </div>

@@ -4,7 +4,7 @@ import { parseResumeText } from '../services/geminiService';
 import { LoadingSpinner } from './icons';
 import { useAppContext } from '../context/AppContext';
 import { Resume, ResumeContent, ResumeVersion, ResumeTemplate } from '../types';
-import { downloadTextFile } from '../utils/fileUtils'; // Import for JSON export
+import { downloadTextFile, downloadElementAsPdf } from '../utils/fileUtils'; // Import for JSON export and PDF download
 
 const EditIcon: React.FC<{ className?: string }> = ({ className }) => (
     <svg className={className} xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor">
@@ -48,7 +48,8 @@ Bachelor of Science in Business Administration | State University | 2017`,
       education: [
         { institution: 'University of Anytown', degree: 'Master of Business Administration (MBA)' },
         { institution: 'State University', degree: 'Bachelor of Science in Business Administration' }
-      ]
+      ],
+      contactInfo: { name: 'John Doe', address: '123 Main Street, Anytown, USA', phone: '(123) 456-7890', email: 'john.doe@email.com' }
     }
   },
   {
@@ -82,7 +83,8 @@ Bachelor of Science in Computer Science | Tech University | 2020`,
       ],
       education: [
         { institution: 'Tech University', degree: 'Bachelor of Science in Computer Science' }
-      ]
+      ],
+      contactInfo: { name: 'Jane Smith', address: 'City, State', phone: '(555) 123-4567', email: 'jane.smith@dev.com' }
     }
   },
   {
@@ -116,7 +118,8 @@ Bachelor of Arts in Economics | City College | 2020`,
       ],
       education: [
         { institution: 'City College', degree: 'Bachelor of Arts in Economics' }
-      ]
+      ],
+      contactInfo: { name: 'Alex Johnson', address: 'City, State', phone: '(987) 654-3210', email: 'alex.johnson@email.com' }
     }
   },
   {
@@ -151,7 +154,8 @@ Bachelor of Fine Arts in Graphic Design | Art Institute | 2019`,
       ],
       education: [
         { institution: 'Art Institute', degree: 'Bachelor of Fine Arts in Graphic Design' }
-      ]
+      ],
+      contactInfo: { name: 'Maria Sanchez', address: 'Town, State', phone: '+1 (111) 222-3333', email: 'hello@mariasanch.design' }
     }
   }
 ];
@@ -188,7 +192,7 @@ const ResumeHub: React.FC = () => {
     }
     // Also, when switching views, ensure edit name state is off
     setIsEditingName(false);
-  }, [view, selectedResumeId, resumes]);
+  }, [view, selectedResumeId, resumes, selectedResume]); // Add selectedResume to dependencies
 
 
   const resetAddForm = () => {
@@ -217,7 +221,8 @@ const ResumeHub: React.FC = () => {
     try {
       let extractedText = '';
       if (file.type === 'application/pdf') {
-        const pdfjsLib = await import('https://aistudiocdn.com/pdfjs-dist@^5.4.296');
+        // Use importmap for pdfjsLib
+        const pdfjsLib = await import('pdfjs-dist@^5.4.296');
         // FIX: Update workerSrc to match the version in index.html (5.4.296)
         pdfjsLib.GlobalWorkerOptions.workerSrc = `https://cdn.jsdelivr.net/npm/pdfjs-dist@5.4.296/build/pdf.worker.mjs`;
         
@@ -232,8 +237,8 @@ const ResumeHub: React.FC = () => {
         }
         extractedText = textItems.join(' ');
       } else if (file.type === 'application/vnd.openxmlformats-officedocument.wordprocessingml.document') {
-        // Dynamically import mammoth
-        const mammoth = await import('https://cdn.jsdelivr.net/npm/mammoth@1.11.0/mammoth.browser.min.js');
+        // Use importmap for mammoth
+        const mammoth = await import('mammoth');
         const arrayBuffer = await file.arrayBuffer();
         const result = await mammoth.extractRawText({ arrayBuffer });
         extractedText = result.value;
@@ -465,9 +470,29 @@ const ResumeHub: React.FC = () => {
     reader.readAsText(file);
   };
 
+  const handleDownloadPdf = () => {
+    if (selectedResume) {
+        downloadElementAsPdf('printable-resume-content', `${selectedResume.name}-Resume.pdf`);
+    } else {
+        setError("No resume selected to download as PDF.");
+    }
+  };
+
 
   const renderResumeDetails = (resumeContent: ResumeContent) => (
     <div className="space-y-6 h-[28rem] overflow-y-auto pr-2">
+      {resumeContent.contactInfo && (resumeContent.contactInfo.name || resumeContent.contactInfo.address || resumeContent.contactInfo.phone || resumeContent.contactInfo.email) && (
+        <div>
+          <h4 className="font-semibold text-lg mb-2">Contact Information</h4>
+          <div className="p-3 bg-gray-100 dark:bg-gray-700/50 rounded-lg text-sm">
+            {resumeContent.contactInfo.name && <p className="font-bold">{resumeContent.contactInfo.name}</p>}
+            {resumeContent.contactInfo.address && <p>{resumeContent.contactInfo.address}</p>}
+            {(resumeContent.contactInfo.phone || resumeContent.contactInfo.email) && (
+              <p>{resumeContent.contactInfo.phone} {resumeContent.contactInfo.phone && resumeContent.contactInfo.email ? '|' : ''} {resumeContent.contactInfo.email}</p>
+            )}
+          </div>
+        </div>
+      )}
       <div>
         <h4 className="font-semibold text-lg mb-2">Skills</h4>
         <div className="flex flex-wrap gap-2">
@@ -636,6 +661,22 @@ const ResumeHub: React.FC = () => {
               <h4 className="font-semibold text-lg mb-2">Active Content:</h4>
               {renderResumeDetails(selectedResume.activeContent)}
 
+              {/* Download Buttons */}
+              <div className="mt-4 flex gap-2">
+                <button 
+                    onClick={() => downloadTextFile(`${selectedResume.name}-Raw.txt`, selectedResume.activeContent.rawText)} 
+                    className="bg-gray-200 dark:bg-gray-700 hover:bg-gray-300 dark:hover:bg-gray-600 text-gray-800 dark:text-gray-200 font-bold py-2 px-4 rounded-lg text-sm transition-colors"
+                >
+                    Download Raw Text
+                </button>
+                <button 
+                    onClick={handleDownloadPdf} 
+                    className="bg-red-600 hover:bg-red-700 text-white font-bold py-2 px-4 rounded-lg text-sm transition-colors"
+                >
+                    Download PDF
+                </button>
+              </div>
+
               {/* Version History Section */}
               <div className="mt-8 pt-6 border-t dark:border-gray-700">
                 <h4 className="font-semibold text-lg mb-4">Version History</h4>
@@ -674,6 +715,51 @@ const ResumeHub: React.FC = () => {
       </div>
       {error && <p className="fixed bottom-4 left-1/2 -translate-x-1/2 bg-red-500 text-white py-2 px-4 rounded-lg shadow-lg z-50">{error}</p>}
       {statusMessage && <p className="fixed bottom-4 left-1/2 -translate-x-1/2 bg-green-500 text-white py-2 px-4 rounded-lg shadow-lg z-50">{statusMessage}</p>}
+
+      {/* Hidden div for PDF generation */}
+      <div className="absolute -left-[9999px] top-0 w-[800px] p-8 bg-white text-gray-900" id="printable-resume-content">
+        {selectedResume && (
+          <div>
+            {selectedResume.activeContent.contactInfo && (selectedResume.activeContent.contactInfo.name || selectedResume.activeContent.contactInfo.address || selectedResume.activeContent.contactInfo.phone || selectedResume.activeContent.contactInfo.email) && (
+              <div className="mb-6 text-center">
+                <h1 className="text-4xl font-bold mb-1">{selectedResume.activeContent.contactInfo.name}</h1>
+                <p className="text-lg">{selectedResume.activeContent.contactInfo.address}</p>
+                <p className="text-lg">{selectedResume.activeContent.contactInfo.phone} {selectedResume.activeContent.contactInfo.phone && selectedResume.activeContent.contactInfo.email ? '•' : ''} {selectedResume.activeContent.contactInfo.email}</p>
+              </div>
+            )}
+
+            {selectedResume.activeContent.skills.length > 0 && (
+              <div className="mb-6">
+                <h2 className="text-2xl font-bold border-b-2 border-gray-400 pb-1 mb-3">Skills</h2>
+                <p className="text-lg">{selectedResume.activeContent.skills.join(' • ')}</p>
+              </div>
+            )}
+
+            {selectedResume.activeContent.experience.length > 0 && (
+              <div className="mb-6">
+                <h2 className="text-2xl font-bold border-b-2 border-gray-400 pb-1 mb-3">Experience</h2>
+                {selectedResume.activeContent.experience.map((exp, idx) => (
+                  <div key={idx} className="mb-4">
+                    <h3 className="text-xl font-semibold">{exp.title} at {exp.company}</h3>
+                    <p className="text-base mt-1">{exp.description}</p>
+                  </div>
+                ))}
+              </div>
+            )}
+
+            {selectedResume.activeContent.education.length > 0 && (
+              <div className="mb-6">
+                <h2 className="text-2xl font-bold border-b-2 border-gray-400 pb-1 mb-3">Education</h2>
+                {selectedResume.activeContent.education.map((edu, idx) => (
+                  <div key={idx} className="mb-2">
+                    <h3 className="text-xl font-semibold">{edu.degree} from {edu.institution}</h3>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        )}
+      </div>
     </div>
   );
 };

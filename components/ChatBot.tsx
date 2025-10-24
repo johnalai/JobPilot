@@ -1,10 +1,10 @@
 import React, { useState, useRef, useEffect } from 'react';
-import { ChatIcon, CloseIcon, SendIcon, LoadingSpinner, TrashIcon, SpeakerIcon } from './icons'; // Import TrashIcon and SpeakerIcon
+import { ChatIcon, CloseIcon, SendIcon, LoadingSpinner, TrashIcon, SpeakerIcon } from './icons';
 import { getChatStream } from '../services/geminiService';
-import { GoogleGenAI, GenerateContentResponse, Modality } from '@google/genai'; // Import GoogleGenAI and Modality
+import { GoogleGenAI, GenerateContentResponse, Modality } from '@google/genai';
 import { useAppContext } from '../context/AppContext';
 import { Message } from '../types';
-import { decode, decodeAudioData } from '../utils/audioUtils'; // Import audio utilities
+import { decode, decodeAudioData } from '../utils/audioUtils';
 
 const ChatBot: React.FC = () => {
   const [isOpen, setIsOpen] = useState(false);
@@ -12,12 +12,12 @@ const ChatBot: React.FC = () => {
   const [input, setInput] = useState('');
   const [isLoading, setIsLoading] = useState(false);
   const [showClearConfirmation, setShowClearConfirmation] = useState(false);
-  const [isTtsEnabled, setIsTtsEnabled] = useState(false); // New state for TTS toggle
-  const [isSpeaking, setIsSpeaking] = useState(false); // New state for TTS loading/speaking
+  const [isTtsEnabled, setIsTtsEnabled] = useState(false);
+  const [isSpeaking, setIsSpeaking] = useState(false);
   
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const audioContextRef = useRef<AudioContext | null>(null);
-  const nextStartTimeRef = useRef(0); // For sequential audio playback
+  const nextStartTimeRef = useRef(0);
 
   const scrollToBottom = () => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
@@ -25,16 +25,11 @@ const ChatBot: React.FC = () => {
 
   useEffect(scrollToBottom, [chatHistory]);
 
-  // Initialize AudioContext on component mount if TTS is enabled
   useEffect(() => {
     if (isTtsEnabled && !audioContextRef.current) {
       audioContextRef.current = new (window.AudioContext || (window as any).webkitAudioContext)({ sampleRate: 24000 });
     }
     if (!isTtsEnabled && audioContextRef.current) {
-        // Stop any ongoing speech and close the audio context
-        // Stop any playing sounds
-        // This is a simplified stop, a more robust solution would track all sources
-        // and stop them individually. For now, assume a single source or let it finish.
         audioContextRef.current.close().then(() => {
             audioContextRef.current = null;
             nextStartTimeRef.current = 0;
@@ -42,7 +37,6 @@ const ChatBot: React.FC = () => {
         });
     }
     return () => {
-      // Cleanup on unmount
       if (audioContextRef.current && audioContextRef.current.state !== 'closed') {
         audioContextRef.current.close();
       }
@@ -64,7 +58,7 @@ const ChatBot: React.FC = () => {
     setIsLoading(true);
 
     let botResponse = '';
-    const botMessageId = Date.now() + 1; // Unique ID for the new bot message
+    const botMessageId = Date.now() + 1;
 
     try {
       setChatHistory(prev => [...prev, { id: botMessageId, text: '', sender: 'bot' }]);
@@ -77,16 +71,14 @@ const ChatBot: React.FC = () => {
         ));
       }
 
-      // Handle TTS if enabled
       if (isTtsEnabled && botResponse.trim()) {
         setIsSpeaking(true);
-        // Ensure audio context is ready
         if (!audioContextRef.current || audioContextRef.current.state === 'closed') {
             audioContextRef.current = new (window.AudioContext || (window as any).webkitAudioContext)({ sampleRate: 24000 });
             nextStartTimeRef.current = audioContextRef.current.currentTime;
         }
 
-        const aiTTS = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY! }); // New instance for TTS call
+        const aiTTS = new GoogleGenAI({ apiKey: process.env.API_KEY! });
         const ttsResponse = await aiTTS.models.generateContent({
           model: "gemini-2.5-flash-preview-tts",
           contents: [{ parts: [{ text: botResponse }] }],
@@ -94,7 +86,7 @@ const ChatBot: React.FC = () => {
             responseModalities: [Modality.AUDIO],
             speechConfig: {
               voiceConfig: {
-                prebuiltVoiceConfig: { voiceName: 'Kore' }, // Default voice, can be made configurable
+                prebuiltVoiceConfig: { voiceName: 'Kore' },
               },
             },
           },
@@ -113,16 +105,13 @@ const ChatBot: React.FC = () => {
           source.buffer = audioBuffer;
           source.connect(audioContextRef.current.destination);
 
-          // Schedule playback
           const currentTime = audioContextRef.current.currentTime;
           nextStartTimeRef.current = Math.max(nextStartTimeRef.current, currentTime);
           source.start(nextStartTimeRef.current);
           nextStartTimeRef.current += audioBuffer.duration;
 
           source.onended = () => {
-            // Only set isSpeaking to false if this was the last queued audio
-            // This is a heuristic and might need refinement for complex audio queues
-            if (audioContextRef.current && audioContextRef.current.currentTime >= nextStartTimeRef.current - 0.1) { // -0.1 to account for float precision
+            if (audioContextRef.current && audioContextRef.current.currentTime >= nextStartTimeRef.current - 0.1) {
                 setIsSpeaking(false);
             }
           };
@@ -138,7 +127,6 @@ const ChatBot: React.FC = () => {
       setChatHistory(prev => [...prev, { id: Date.now() + 1, text: 'Sorry, I encountered an error.', sender: 'bot' }]);
     } finally {
       setIsLoading(false);
-      // If TTS was not enabled, ensure speaking state is false
       if (!isTtsEnabled) {
         setIsSpeaking(false);
       }
@@ -148,7 +136,6 @@ const ChatBot: React.FC = () => {
   const handleClearHistory = () => {
     setChatHistory([]);
     setShowClearConfirmation(false);
-    // Stop any ongoing speech when clearing history
     if (audioContextRef.current && audioContextRef.current.state !== 'closed') {
       audioContextRef.current.close().then(() => {
         audioContextRef.current = null;
@@ -161,6 +148,7 @@ const ChatBot: React.FC = () => {
   return (
     <>
       <button
+        id="chat-toggle-button" // Added ID for intro.js targeting
         onClick={() => setIsOpen(!isOpen)}
         className="fixed bottom-6 right-6 bg-blue-600 text-white p-4 rounded-full shadow-lg hover:bg-blue-700 transition-transform transform hover:scale-110 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2"
         aria-label="Toggle Chat"
@@ -206,7 +194,6 @@ const ChatBot: React.FC = () => {
                     {msg.text ? (
                       <p className="mb-1 text-left whitespace-pre-wrap">{msg.text}</p>
                     ) : (
-                      // Show spinner if text is empty for a bot message and it's the latest one being processed
                       msg.sender === 'bot' && isLoading && (index === chatHistory.length - 1) ? (
                         <LoadingSpinner className="w-4 h-4 my-1" />
                       ) : null

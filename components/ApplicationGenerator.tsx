@@ -1,4 +1,3 @@
-
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { useAppContext } from '../context/AppContext';
 import { generateResumeForJob, generateCoverLetterForJob, analyzeSkillGap, analyzeATSCompliance } from '../services/geminiService';
@@ -7,7 +6,7 @@ import { LoadingSpinner } from './icons';
 import { downloadDocxFile, downloadElementAsPdf } from '../utils/fileUtils';
 
 const ApplicationGenerator: React.FC = () => {
-  const { generationContext, setGenerationContext, setApplications, setView } = useAppContext();
+  const { generationContext, setGenerationContext, setApplications, setView, setError } = useAppContext(); // Get global setError
   
   const [generatedResume, setGeneratedResume] = useState<string>('');
   const [generatedCoverLetter, setGeneratedCoverLetter] = useState<string>('');
@@ -22,7 +21,8 @@ const ApplicationGenerator: React.FC = () => {
     coverLetter: false,
     ats: false,
   });
-  const [error, setError] = useState<string | null>(null);
+  // Removed local error state, now using global setError
+  // const [error, setError] = useState<string | null>(null);
 
   const { job, baseResume } = generationContext || {};
   const atsReportRef = useRef<HTMLDivElement>(null);
@@ -31,59 +31,60 @@ const ApplicationGenerator: React.FC = () => {
   const runSkillAnalysis = useCallback(async () => {
     if (!job || !baseResume) return;
     setLoading(prev => ({ ...prev, analysis: true }));
-    setError(null);
+    setError(null); // Clear global error
     try {
       const result = await analyzeSkillGap(job, baseResume.activeContent);
       setSkillAnalysis(result);
     } catch (e: any) {
-      setError(e.message || 'Failed to analyze skill gap.');
+      setError(e.message || 'Failed to analyze skill gap.'); // Set global error
     } finally {
       setLoading(prev => ({ ...prev, analysis: false }));
     }
-  }, [job, baseResume]);
+  }, [job, baseResume, setError]);
 
   const runATSAnalysis = useCallback(async (resumeText: string) => {
     if (!job) return;
     setLoading(prev => ({ ...prev, ats: true }));
+    setError(null); // Clear global error
     try {
         const result = await analyzeATSCompliance(job, resumeText);
         setAtsScore(result);
     } catch (e: any) {
-        setError(e.message || 'Failed to analyze ATS score.');
+        setError(e.message || 'Failed to analyze ATS score.'); // Set global error
     } finally {
         setLoading(prev => ({ ...prev, ats: false }));
     }
-  }, [job]);
+  }, [job, setError]);
 
   const runResumeGeneration = useCallback(async () => {
     if (!job || !baseResume) return;
     setLoading(prev => ({ ...prev, resume: true }));
-    setError(null);
+    setError(null); // Clear global error
     setAtsScore(undefined); // Reset ATS score when regenerating
     try {
       const result = await generateResumeForJob(job, baseResume.activeContent, customHeader);
       setGeneratedResume(result);
       await runATSAnalysis(result); // Run ATS analysis after resume is generated
     } catch (e: any) {
-      setError(e.message || 'Failed to generate resume.');
+      setError(e.message || 'Failed to generate resume.'); // Set global error
     } finally {
       setLoading(prev => ({ ...prev, resume: false }));
     }
-  }, [job, baseResume, customHeader, runATSAnalysis]);
+  }, [job, baseResume, customHeader, runATSAnalysis, setError]);
 
   const runCoverLetterGeneration = useCallback(async () => {
     if (!job || !baseResume) return;
     setLoading(prev => ({ ...prev, coverLetter: true }));
-    setError(null);
+    setError(null); // Clear global error
     try {
       const result = await generateCoverLetterForJob(job, baseResume.activeContent, coverLetterTone, customHeader);
       setGeneratedCoverLetter(result);
     } catch (e: any) {
-      setError(e.message || 'Failed to generate cover letter.');
+      setError(e.message || 'Failed to generate cover letter.'); // Set global error
     } finally {
       setLoading(prev => ({ ...prev, coverLetter: false }));
     }
-  }, [job, baseResume, coverLetterTone, customHeader]);
+  }, [job, baseResume, coverLetterTone, customHeader, setError]);
 
   useEffect(() => {
     // Automatically run skill analysis when component loads with context
@@ -165,9 +166,47 @@ const ApplicationGenerator: React.FC = () => {
             {loading.ats ? <LoadingSpinner className="w-8 h-8 mx-auto" /> :
               atsScore ? (
                 <div className="text-center">
-                    <div className={`text-5xl font-bold ${getScoreColor(atsScore.score)}`}>{atsScore.score}</div>
+                    <div className="relative w-32 h-32 mx-auto mb-4" aria-label={`ATS Score: ${atsScore.score} percent`}>
+                        <svg className="w-full h-full" viewBox="0 0 100 100">
+                            {/* Background circle */}
+                            <circle className="text-gray-200 dark:text-gray-700" strokeWidth="10" stroke="currentColor" fill="transparent" r="45" cx="50" cy="50" />
+                            {/* Progress circle */}
+                            <circle className={`${getScoreColor(atsScore.score)} transition-all duration-1000 ease-out`} strokeWidth="10" strokeDasharray={2 * Math.PI * 45} strokeDashoffset={(2 * Math.PI * 45) - (atsScore.score / 100) * (2 * Math.PI * 45)} strokeLinecap="round" stroke="currentColor" fill="transparent" r="45" cx="50" cy="50" transform="rotate(-90 50 50)" />
+                        </svg>
+                        <div className={`absolute inset-0 flex items-center justify-center text-3xl font-bold ${getScoreColor(atsScore.score)}`}>{atsScore.score}</div>
+                    </div>
                     <p className="font-semibold">Match Score</p>
                     <p className="text-sm mt-2 text-gray-600 dark:text-gray-400">{atsScore.feedback}</p>
+
+                    {atsScore.missingKeywords && atsScore.missingKeywords.length > 0 && (
+                        <div className="mt-4 text-left border-t pt-4 dark:border-gray-700">
+                            <h4 className="font-bold text-red-600 dark:text-red-400">Missing Keywords from Job Description:</h4>
+                            <ul className="list-disc list-inside text-sm text-gray-700 dark:text-gray-300">
+                                {atsScore.missingKeywords.map((keyword, i) => (
+                                    <li key={i}>{keyword}</li>
+                                ))}
+                            </ul>
+                        </div>
+                    )}
+
+                    {atsScore.integrationSuggestions && atsScore.integrationSuggestions.length > 0 && (
+                        <div className="mt-4 text-left">
+                            <h4 className="font-bold text-blue-600 dark:text-blue-400">Suggestions for Integration:</h4>
+                            <ul className="list-disc list-inside text-sm text-gray-700 dark:text-gray-300">
+                                {atsScore.integrationSuggestions.map((suggestion, i) => (
+                                    <li key={i}>{suggestion}</li>
+                                ))}
+                            </ul>
+                        </div>
+                    )}
+
+                    {atsScore.jargonCheck && (
+                        <div className="mt-4 text-left">
+                            <h4 className="font-bold text-purple-600 dark:text-purple-400">Industry Jargon Assessment:</h4>
+                            <p className="text-sm text-gray-700 dark:text-gray-300">{atsScore.jargonCheck}</p>
+                        </div>
+                    )}
+
                      <button onClick={() => downloadElementAsPdf('ats-report-card', `${job.company}-${job.title}-ATS-Report.pdf`)} className="mt-4 w-full bg-gray-200 dark:bg-gray-700 hover:bg-gray-300 dark:hover:bg-gray-600 font-bold py-2 px-4 rounded-lg text-sm">
                         Download Report
                     </button>
@@ -242,7 +281,8 @@ const ApplicationGenerator: React.FC = () => {
           </div>
         </div>
       </div>
-      {error && <p className="fixed bottom-4 left-1/2 -translate-x-1/2 bg-red-500 text-white py-2 px-4 rounded-lg shadow-lg">{error}</p>}
+      {/* Removed local error display, now using global error in App.tsx */}
+      {/* {error && <p className="fixed bottom-4 left-1/2 -translate-x-1/2 bg-red-500 text-white py-2 px-4 rounded-lg shadow-lg">{error}</p>} */}
     </div>
   );
 };

@@ -5,6 +5,41 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>JobPilot AI</title>
   <script src="https://cdn.tailwindcss.com"></script>
+  <link href="https://aistudiocdn.com/intro.js@7.2.0/minified/introjs.min.css" rel="stylesheet">
+  <style>
+    /* Custom styles for intro.js tooltips to ensure text visibility */
+    body .introjs-tooltiptext {
+      color: #333 !important; /* Force dark text for light theme */
+    }
+    body.dark .introjs-tooltiptext {
+      color: #eee !important; /* Force light text for dark theme */
+    }
+    body .introjs-tooltip {
+      background-color: #f7f7f7 !important; /* Light background for tooltip in light theme */
+      color: #333 !important; /* Default text color for the tooltip itself */
+    }
+    body.dark .introjs-tooltip {
+      background-color: #333 !important; /* Dark background for tooltip in dark theme */
+      color: #eee !important; /* Default text color for the tooltip itself */
+    }
+    body .introjs-button {
+      /* Basic styling for buttons in intro.js to fit theme */
+      background-color: #2563eb !important; /* blue-600 */
+      color: white !important;
+      border: none !important;
+      padding: 8px 16px !important;
+      border-radius: 6px !important;
+      font-size: 0.875rem !important;
+    }
+    body .introjs-prevbutton {
+      background-color: #6b7280 !important; /* gray-500 */
+    }
+    body .introjs-skipbutton {
+      color: #6b7280 !important; /* gray-500 */
+      background: none !important;
+      text-decoration: underline !important;
+    }
+  </style>
   <script type="importmap">
 {
   "imports": {
@@ -14,7 +49,10 @@
     "@google/genai": "https://aistudiocdn.com/@google/genai@^1.26.0",
     "jspdf": "https://aistudiocdn.com/jspdf@^2.5.1",
     "html2canvas": "https://aistudiocdn.com/html2canvas@^1.4.1",
-    "docx": "https://aistudiocdn.com/docx@^9.5.1"
+    "docx": "https://aistudiocdn.com/docx@^9.5.1",
+    "intro.js": "https://aistudiocdn.com/intro.js@7.2.0",
+    "pdfjs-dist@^5.4.296": "https://aistudiocdn.com/pdfjs-dist@5.4.296",
+    "mammoth": "https://aistudiocdn.com/mammoth@1.11.0"
   }
 }
 </script>

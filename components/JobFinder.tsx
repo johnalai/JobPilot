@@ -25,6 +25,7 @@ const JobFinder: React.FC = () => {
     setSavedJobs,
     frequentlySearchedKeywords, // Get from context
     setFrequentlySearchedKeywords, // Get from context
+    setError, // Import setError from context
   } = useAppContext();
 
   const [filters, setFilters] = useState<FindJobsFilters>(() => {
@@ -34,7 +35,7 @@ const JobFinder: React.FC = () => {
   const [showAdvanced, setShowAdvanced] = useState(false);
   const [jobs, setJobs] = useState<Job[]>([]);// FIX: Explicitly specify the type of `jobs`
   const [loading, setLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const [currentError, setCurrentError] = useState<string | null>(null); // Use a local error state for display in this component
 
   // New states for autocomplete
   const [filteredSuggestions, setFilteredSuggestions] = useState<string[]>([]);
@@ -90,7 +91,8 @@ const JobFinder: React.FC = () => {
 
   const handleSearch = useCallback(async () => {
     setLoading(true);
-    setError(null);
+    setCurrentError(null); // Clear local error state
+    setError(null); // Clear global error state for AI issues
     setJobs([]);
     setSelectedJobForViewing(null);
 
@@ -108,16 +110,19 @@ const JobFinder: React.FC = () => {
       const results = await findJobs(filters, defaultResume?.activeContent || null);
       setJobs(results);
     } catch (e: any) {
-      setError(e.message || "Failed to find jobs.");
+      setCurrentError(e.message || "Failed to find jobs."); // Set local error
+      setError(e.message || "Failed to find jobs (AI service error)."); // Set global error for persistent visibility
     } finally {
       setLoading(false);
       setShowSuggestions(false); // Hide suggestions after search
     }
-  }, [filters, defaultResume, setSelectedJobForViewing, setFrequentlySearchedKeywords]);
+  }, [filters, defaultResume, setSelectedJobForViewing, setFrequentlySearchedKeywords, setError]);
 
   const handleApply = (job: Job) => {
     if (!defaultResume) {
-      setError("Please set a default resume before generating an application.");
+      setCurrentError("Please set a default resume before generating an application."); // Use local error
+      // Clear error after a few seconds
+      setTimeout(() => setCurrentError(null), 3000);
       return;
     }
     // FIX: Pass activeContent to generationContext
@@ -140,11 +145,11 @@ const JobFinder: React.FC = () => {
     if (jobsToSave.length > 0) {
       setSavedJobs(prev => [...prev, ...jobsToSave]);
       // Optionally provide feedback to user
-      setError(`Successfully saved ${jobsToSave.length} jobs.`);
-      setTimeout(() => setError(null), 3000);
+      setCurrentError(`Successfully saved ${jobsToSave.length} jobs.`); // Use local error
+      setTimeout(() => setCurrentError(null), 3000);
     } else {
-      setError("All displayed jobs are already saved.");
-      setTimeout(() => setError(null), 3000);
+      setCurrentError("All displayed jobs are already saved."); // Use local error
+      setTimeout(() => setCurrentError(null), 3000);
     }
   };
 
@@ -309,7 +314,7 @@ const JobFinder: React.FC = () => {
         </div>
       </div>
       
-      {error && <p className="text-red-500 mt-4 text-center">{error}</p>}
+      {currentError && <p className="text-red-500 mt-4 text-center">{currentError}</p>} {/* Display local error */}
       {!defaultResume && jobs.length === 0 && <p className="text-yellow-600 mt-4 text-center">Tip: Add a default resume in the 'Resume Hub' for better search results.</p>}
 
       <div className="mt-8 grid grid-cols-1 md:grid-cols-3 gap-8" style={{ minHeight: '60vh' }}>
