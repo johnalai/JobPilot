@@ -47,6 +47,8 @@ export const downloadDocxFile = async (filename: string, content: string) => {
 
 /**
  * Captures an HTML element by its ID, converts it to a canvas, and downloads it as a PDF.
+ * This function is updated to apply a specific CSS class for consistent PDF styling
+ * and to ensure standard 1-inch margins on the PDF document.
  * @param elementId - The ID of the HTML element to capture.
  * @param filename - The name for the downloaded PDF file.
  */
@@ -57,31 +59,93 @@ export const downloadElementAsPdf = async (elementId: string, filename: string) 
     return;
   }
 
-  // Add a temporary class to ensure dark mode styles are rendered correctly if needed
-  const isDarkMode = document.documentElement.classList.contains('dark');
-  if (isDarkMode) {
-    input.classList.add('dark');
-  }
+  // Store original styles to restore after capture
+  const originalDisplay = input.style.display;
+  const originalPosition = input.style.position;
+  const originalLeft = input.style.left;
+  const originalWidth = input.style.width;
+  const originalHeight = input.style.height;
 
+  // Temporarily make the element visible and in flow for html2canvas to capture correctly.
+  // The .pdf-content-wrapper class now handles the internal width/height.
+  input.style.display = 'block';
+  input.style.position = 'static';
+  input.style.left = '0';
+  input.classList.add('pdf-content-wrapper'); // Add the styling class
+
+  // Capture the HTML element as a canvas image
   const canvas = await html2canvas(input, {
     scale: 2, // Higher scale for better quality
-    backgroundColor: isDarkMode ? '#111827' : '#ffffff', // Set background color
+    backgroundColor: '#ffffff', // Always use white background for PDF
     useCORS: true,
   });
   
-  if (isDarkMode) {
-    input.classList.remove('dark');
-  }
+  // Restore original styles and remove PDF class after capturing
+  input.style.display = originalDisplay;
+  input.style.position = originalPosition;
+  input.style.left = originalLeft;
+  input.style.width = originalWidth;
+  input.style.height = originalHeight;
+  input.classList.remove('pdf-content-wrapper');
 
   const imgData = canvas.toDataURL('image/png');
   
-  // Calculate dimensions to fit the image in the PDF
+  // Initialize jsPDF with letter format (8.5in x 11in)
   const pdf = new jspdf({
     orientation: 'portrait',
-    unit: 'px',
-    format: [canvas.width, canvas.height]
+    unit: 'pt', // Use points for consistent sizing (1 inch = 72 points)
+    format: 'letter' 
   });
+
+  const pdfPageWidth = pdf.internal.pageSize.getWidth();  // e.g., 612 pt (8.5 * 72)
+  const pdfPageHeight = pdf.internal.pageSize.getHeight(); // e.g., 792 pt (11 * 72)
+
+  const margin = 72; // 1 inch in points
+
+  // Calculate the printable area dimensions within the PDF page
+  const printableAreaWidth = pdfPageWidth - 2 * margin; // e.g., 612 - 144 = 468 pt
+  const printableAreaHeight = pdfPageHeight - 2 * margin; // e.g., 792 - 144 = 648 pt
+
+  // Calculate the image's effective height when scaled to fit the printableAreaWidth
+  // This maintains the aspect ratio of the captured canvas content.
+  const scaledImgHeight = (canvas.height * printableAreaWidth) / canvas.width;
+
+  let currentSourceY = 0; // Y-coordinate in the original canvas (in pixels)
   
-  pdf.addImage(imgData, 'PNG', 0, 0, canvas.width, canvas.height);
+  // Iterate to add pages for content taller than one printable area
+  while (currentSourceY < canvas.height) {
+    if (currentSourceY !== 0) {
+      pdf.addPage();
+    }
+
+    // Determine how much of the source image (in pixels) fits on the current PDF printable area height
+    const sourceHeightToDraw = Math.min(
+      canvas.height - currentSourceY, // Remaining source height in pixels
+      (printableAreaHeight / scaledImgHeight) * canvas.height // Source pixels that correspond to one PDF printable area height
+    );
+    
+    // Calculate the actual height this segment will occupy on the PDF page (in points)
+    const destinationHeightOnPage = (sourceHeightToDraw / canvas.height) * scaledImgHeight;
+
+    // Add image slice to the PDF page, positioned with margins
+    pdf.addImage(
+      imgData,          // Image data URL
+      'PNG',            // Image format
+      margin,           // x-coordinate on PDF page (left margin)
+      margin,           // y-coordinate on PDF page (top margin)
+      printableAreaWidth, // width on PDF page (content width between margins)
+      destinationHeightOnPage, // height on PDF page
+      undefined,        // alias
+      'NONE',           // compression
+      0,                // rotation
+      0,                // sx (source x start from canvas, usually 0)
+      currentSourceY,   // sy (source y start from canvas in pixels)
+      canvas.width,     // sWidth (source width from canvas in pixels)
+      sourceHeightToDraw // sHeight (source height from canvas in pixels)
+    );
+
+    currentSourceY += sourceHeightToDraw; // Advance the source Y position for the next page
+  }
+
   pdf.save(filename);
 };

@@ -3,6 +3,7 @@ import { useAppContext } from '../context/AppContext';
 import { Job, WebGroundingChunk } from '../types';
 import { BookmarkIcon, LocationMarkerIcon, CalendarIcon, BriefcaseIcon, LoadingSpinner, ListUlIcon, GridIcon } from './icons';
 import { analyzeJobUrl, analyzeJobText, DOMAINS_TO_AVOID_AS_PRIMARY_SOURCE, getDomain } from '../services/geminiService';
+import CompanyInsightsDisplay from './CompanyInsightsDisplay'; // Import new component
 
 const SavedJobs: React.FC = () => {
   const {
@@ -182,6 +183,23 @@ const SavedJobs: React.FC = () => {
             {formattedMarkdown(job.description)}
         </div>
         {renderGroundingLinks(job.grounding)}
+
+        {/* Company Insights Display */}
+        <CompanyInsightsDisplay 
+            companyName={job.company} 
+            jobId={job.id} 
+            currentInsights={job.companyInsights}
+            onInsightsFetched={(companyInsights) => {
+              // Update the specific job in the `savedJobs` array
+              setSavedJobs(prevSavedJobs => prevSavedJobs.map(j => 
+                j.id === job.id ? { ...j, companyInsights: companyInsights } : j
+              ));
+              // Also update the selected job in local state if it's the same one
+              setSelectedJob(prevSelected => 
+                prevSelected?.id === job.id ? { ...prevSelected, companyInsights: companyInsights } : prevSelected
+              );
+            }}
+        />
       </div>
     </div>
   );

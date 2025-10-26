@@ -1,5 +1,5 @@
 import React, { createContext, useContext, useState, ReactNode, useEffect } from 'react';
-import { View, Resume, Application, Job, Message, Task, ResumeVersion } from '../types';
+import { View, Resume, Application, Job, Message, Task, ResumeVersion, TailoredDocument } from '../types';
 
 interface GenerationContext {
   job: Job;
@@ -21,14 +21,20 @@ interface AppContextType {
   savedJobs: Job[];
   setSavedJobs: React.Dispatch<React.SetStateAction<Job[]>>;
 
+  tailoredDocuments: TailoredDocument[]; // New: Tailored documents state
+  setTailoredDocuments: React.Dispatch<React.SetStateAction<TailoredDocument[]>>; // New: Setter for tailored documents
+
+  selectedTailoredDocumentId: string | null; // New: To select a tailored doc from other views
+  setSelectedTailoredDocumentId: React.Dispatch<React.SetStateAction<string | null>>; // New: Setter for selected tailored doc ID
+
   generationContext: GenerationContext | null;
   setGenerationContext: (context: GenerationContext | null) => void;
 
   selectedJobForViewing: Job | null;
-  setSelectedJobForViewing: (job: Job | null) => void;
+  setSelectedJobForViewing: React.Dispatch<React.SetStateAction<Job | null>>;
 
   selectedApplicationForInterview: Application | null;
-  setSelectedApplicationForInterview: (app: Application | null) => void;
+  setSelectedApplicationForInterview: React.Dispatch<React.SetStateAction<Application | null>>;
 
   chatHistory: Message[];
   setChatHistory: React.Dispatch<React.SetStateAction<Message[]>>;
@@ -49,50 +55,217 @@ interface AppContextType {
 
 const AppContext = createContext<AppContextType | undefined>(undefined);
 
+// Normalization functions for robustness
+const normalizeResume = (resume: any): Resume => {
+  if (typeof resume !== 'object' || resume === null) {
+    console.warn("Invalid top-level resume data found, returning default structure.", resume);
+    return {
+      id: `resume-${Date.now()}-${Math.random()}`,
+      name: 'Corrupted Resume',
+      activeContent: { rawText: '', skills: [], experience: [], education: [], contactInfo: { name: '', address: '', phone: '', email: '' } },
+      versions: [],
+    };
+  }
+
+  const activeContent = (typeof resume.activeContent === 'object' && resume.activeContent !== null) ? resume.activeContent : {};
+  const versions = Array.isArray(resume.versions) ? resume.versions : [];
+
+  const normalizedContactInfo = (typeof activeContent.contactInfo === 'object' && activeContent.contactInfo !== null)
+    ? {
+        name: typeof activeContent.contactInfo.name === 'string' ? activeContent.contactInfo.name : '',
+        address: typeof activeContent.contactInfo.address === 'string' ? activeContent.contactInfo.address : '',
+        phone: typeof activeContent.contactInfo.phone === 'string' ? activeContent.contactInfo.phone : '',
+        email: typeof activeContent.contactInfo.email === 'string' ? activeContent.contactInfo.email : '',
+      }
+    : { name: '', address: '', phone: '', email: '' };
+
+  const normalizedActiveContent = {
+    rawText: typeof activeContent.rawText === 'string' ? activeContent.rawText : '',
+    skills: Array.isArray(activeContent.skills) ? activeContent.skills.filter((s: any) => typeof s === 'string') : [],
+    experience: Array.isArray(activeContent.experience) ? activeContent.experience.map((exp: any) => ({
+      title: typeof exp.title === 'string' ? exp.title : '',
+      company: typeof exp.company === 'string' ? exp.company : '',
+      description: typeof exp.description === 'string' ? exp.description : '',
+    })).filter((exp: any) => exp.title || exp.company || exp.description) : [],
+    education: Array.isArray(activeContent.education) ? activeContent.education.map((edu: any) => ({
+      institution: typeof edu.institution === 'string' ? edu.institution : '',
+      degree: typeof edu.degree === 'string' ? edu.degree : '',
+    })).filter((edu: any) => edu.institution || edu.degree) : [],
+    contactInfo: normalizedContactInfo,
+  };
+
+  const normalizedVersions = versions.length > 0
+    ? versions.map((version: any) => {
+        if (typeof version !== 'object' || version === null) {
+            console.warn("Invalid resume version data found, skipping.", version);
+            return null; // Filter out later
+        }
+        const vContent = (typeof version.content === 'object' && version.content !== null) ? version.content : {};
+        const normalizedVContactInfo = (typeof vContent.contactInfo === 'object' && vContent.contactInfo !== null)
+            ? {
+                name: typeof vContent.contactInfo.name === 'string' ? vContent.contactInfo.name : '',
+                address: typeof vContent.contactInfo.address === 'string' ? vContent.contactInfo.address : '',
+                phone: typeof vContent.contactInfo.phone === 'string' ? vContent.contactInfo.phone : '',
+                email: typeof vContent.contactInfo.email === 'string' ? vContent.contactInfo.email : '',
+              }
+            : { name: '', address: '', phone: '', email: '' };
+
+        return {
+          timestamp: typeof version.timestamp === 'number' ? version.timestamp : Date.now(),
+          versionName: typeof version.versionName === 'string' ? version.versionName : 'Unnamed Version',
+          content: {
+            rawText: typeof vContent.rawText === 'string' ? vContent.rawText : '',
+            skills: Array.isArray(vContent.skills) ? vContent.skills.filter((s: any) => typeof s === 'string') : [],
+            experience: Array.isArray(vContent.experience) ? vContent.experience.map((exp: any) => ({
+              title: typeof exp.title === 'string' ? exp.title : '',
+              company: typeof exp.company === 'string' ? exp.company : '',
+              description: typeof exp.description === 'string' ? exp.description : '',
+            })).filter((exp: any) => exp.title || exp.company || exp.description) : [],
+            education: Array.isArray(vContent.education) ? vContent.education.map((edu: any) => ({
+              institution: typeof edu.institution === 'string' ? edu.institution : '',
+              degree: typeof edu.degree === 'string' ? edu.degree : '',
+            })).filter((edu: any) => edu.institution || edu.degree) : [],
+            contactInfo: normalizedVContactInfo,
+          },
+        };
+      }).filter(Boolean) as ResumeVersion[] // Filter out any nulls from invalid versions
+    : [{ // If no versions exist or all were invalid, create one from active content
+        content: normalizedActiveContent,
+        timestamp: Date.now(),
+        versionName: 'Initial Import',
+      }];
+
+
+  return {
+    id: typeof resume.id === 'string' ? resume.id : `resume-${Date.now()}-${Math.random()}`, // Ensure ID
+    name: typeof resume.name === 'string' ? resume.name : 'Untitled Resume',
+    activeContent: normalizedActiveContent,
+    versions: normalizedVersions,
+  };
+};
+
+const normalizeJob = (job: any): Job => {
+  if (typeof job !== 'object' || job === null) {
+    console.warn("Invalid top-level job data found, returning default structure.", job);
+    return {
+      id: `job-${Date.now()}-${Math.random()}`,
+      title: 'Corrupted Job',
+      company: 'Unknown Company',
+      location: 'Not Specified',
+      description: 'No description provided.',
+    };
+  }
+  return {
+    id: typeof job.id === 'string' ? job.id : `job-${Date.now()}-${Math.random()}`,
+    title: typeof job.title === 'string' ? job.title : 'Untitled Job',
+    company: typeof job.company === 'string' ? job.company : 'Unknown Company',
+    location: typeof job.location === 'string' ? job.location : 'Not Specified',
+    description: typeof job.description === 'string' ? job.description : 'No description provided.',
+    workModel: typeof job.workModel === 'string' ? job.workModel : undefined,
+    datePosted: typeof job.datePosted === 'string' ? job.datePosted : undefined,
+    sourceUrl: typeof job.sourceUrl === 'string' ? job.sourceUrl : undefined,
+    grounding: Array.isArray(job.grounding) ? job.grounding : [],
+    companyInsights: (typeof job.companyInsights === 'object' && job.companyInsights !== null) ? job.companyInsights : undefined, // companyInsights is optional
+  };
+};
+
+const normalizeApplication = (app: any): Application => {
+  if (typeof app !== 'object' || app === null) {
+    console.warn("Invalid top-level application data found, returning default structure.", app);
+    return {
+      id: `app-${Date.now()}-${Math.random()}`,
+      job: normalizeJob({}), // Default job
+      baseResumeId: 'unknown',
+      status: 'Not Started',
+      applicationDate: new Date().toISOString(),
+    };
+  }
+
+  return {
+    id: typeof app.id === 'string' ? app.id : `app-${Date.now()}-${Math.random()}`,
+    job: normalizeJob(app.job), // Recursively normalize job
+    baseResumeId: typeof app.baseResumeId === 'string' ? app.baseResumeId : 'unknown',
+    status: (typeof app.status === 'string' && ['Not Started', 'Draft', 'Applied', 'Submitted', 'Interviewing', 'Offer', 'Rejected'].includes(app.status)) ? app.status : 'Not Started',
+    applicationDate: typeof app.applicationDate === 'string' ? app.applicationDate : new Date().toISOString(),
+    generatedResumeId: (app as any).generatedResume ? undefined : (typeof app.generatedResumeId === 'string' ? app.generatedResumeId : undefined),
+    generatedCoverLetterId: (app as any).generatedCoverLetter ? undefined : (typeof app.generatedCoverLetterId === 'string' ? app.generatedCoverLetterId : undefined),
+    atsScore: (typeof app.atsScore === 'object' && app.atsScore !== null) ? app.atsScore : undefined, // atsScore is optional, no deep normalization here for simplicity
+  };
+};
+
+const normalizeTailoredDocument = (doc: any): TailoredDocument => {
+  if (typeof doc !== 'object' || doc === null) {
+    console.warn("Invalid top-level tailored document data found, returning default structure.", doc);
+    return {
+      id: `tailored-doc-${Date.now()}-${Math.random()}`,
+      name: 'Corrupted Document',
+      type: 'resume',
+      content: '',
+      jobId: 'unknown',
+      jobTitle: 'Unknown Job',
+      jobCompany: 'Unknown Company',
+      generationDate: Date.now(),
+    };
+  }
+  return {
+    id: typeof doc.id === 'string' ? doc.id : `tailored-doc-${Date.now()}-${Math.random()}`,
+    name: typeof doc.name === 'string' ? doc.name : 'Untitled Document',
+    type: (typeof doc.type === 'string' && ['resume', 'coverLetter'].includes(doc.type)) ? doc.type : 'resume', // Default to 'resume' if type is missing or invalid
+    content: typeof doc.content === 'string' ? doc.content : '',
+    jobId: typeof doc.jobId === 'string' ? doc.jobId : 'unknown',
+    jobTitle: typeof doc.jobTitle === 'string' ? doc.jobTitle : 'Unknown Job',
+    jobCompany: typeof doc.jobCompany === 'string' ? doc.jobCompany : 'Unknown Company',
+    generationDate: typeof doc.generationDate === 'number' ? doc.generationDate : Date.now(),
+  };
+};
+
+const normalizeMessage = (msg: any): Message => {
+  if (typeof msg !== 'object' || msg === null) {
+    console.warn("Invalid top-level message data found, returning default structure.", msg);
+    return {
+      id: Date.now() + Math.random(),
+      text: 'Corrupted message',
+      sender: 'bot',
+    };
+  }
+  return {
+    id: typeof msg.id === 'number' ? msg.id : Date.now() + Math.random(),
+    text: typeof msg.text === 'string' ? msg.text : '',
+    sender: (typeof msg.sender === 'string' && ['user', 'bot'].includes(msg.sender)) ? msg.sender : 'bot', // Default sender if missing
+  };
+};
+
+const normalizeTask = (task: any): Task => {
+  if (typeof task !== 'object' || task === null) {
+    console.warn("Invalid top-level task data found, returning default structure.", task);
+    return {
+      id: `task-${Date.now()}-${Math.random()}`,
+      title: 'Corrupted Task',
+      description: '',
+      dueDate: new Date().toISOString().split('T')[0],
+      status: 'Pending',
+      priority: 'Medium',
+    };
+  }
+  return {
+    id: typeof task.id === 'string' ? task.id : `task-${Date.now()}-${Math.random()}`,
+    title: typeof task.title === 'string' ? task.title : 'Untitled Task',
+    description: typeof task.description === 'string' ? task.description : '',
+    dueDate: typeof task.dueDate === 'string' ? task.dueDate : new Date().toISOString().split('T')[0],
+    status: (typeof task.status === 'string' && ['Pending', 'In Progress', 'Completed'].includes(task.status)) ? task.status : 'Pending',
+    priority: (typeof task.priority === 'string' && ['Low', 'Medium', 'High'].includes(task.priority)) ? task.priority : 'Medium',
+  };
+};
+
+
 export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => {
   const [view, setView] = useState<View>('dashboard');
   
   const [resumes, setResumes] = useState<Resume[]>(() => {
     try {
       const saved = localStorage.getItem('resumes');
-      const loadedResumes: Resume[] = saved ? JSON.parse(saved) : [];
-      
-      return loadedResumes.map(resume => {
-        const activeContent = resume.activeContent || (resume as any).content || {};
-        const versions = resume.versions || [];
-
-        // Ensure all ResumeContent fields are present, even if empty/default
-        const normalizedActiveContent = {
-          rawText: activeContent.rawText || '',
-          skills: activeContent.skills || [],
-          experience: activeContent.experience || [],
-          education: activeContent.education || [],
-          contactInfo: activeContent.contactInfo || { name: '', address: '', phone: '', email: '' },
-        };
-
-        const normalizedVersions = versions.length > 0
-          ? versions.map((version: ResumeVersion) => ({
-              ...version,
-              content: {
-                rawText: version.content?.rawText || '',
-                skills: version.content?.skills || [],
-                experience: version.content?.experience || [],
-                education: version.content?.education || [],
-                contactInfo: version.content?.contactInfo || { name: '', address: '', phone: '', email: '' },
-              }
-            }))
-          : [{
-              content: normalizedActiveContent, // Use the normalized active content for the initial version
-              timestamp: Date.now(),
-              versionName: 'Initial Import (Legacy)',
-            }];
-
-        return {
-          ...resume,
-          activeContent: normalizedActiveContent,
-          versions: normalizedVersions,
-        };
-      });
+      const loadedResumes: any[] = saved ? JSON.parse(saved) : [];
+      return loadedResumes.map(normalizeResume);
     } catch (e) {
       console.error("Failed to load resumes from localStorage. Data might be corrupted or incompatible. Starting fresh.", e);
       return [];
@@ -111,9 +284,8 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
   const [applications, setApplications] = useState<Application[]>(() => {
     try {
       const saved = localStorage.getItem('applications');
-      const loadedApps: Application[] = saved ? JSON.parse(saved) : [];
-      // Basic normalization for applications if needed in the future
-      return loadedApps;
+      const loadedApps: any[] = saved ? JSON.parse(saved) : [];
+      return loadedApps.map(normalizeApplication);
     } catch (e) {
       console.error("Failed to load applications from localStorage. Data might be corrupted or incompatible. Starting fresh.", e);
       return [];
@@ -123,11 +295,21 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
   const [savedJobs, setSavedJobs] = useState<Job[]>(() => {
     try {
       const saved = localStorage.getItem('savedJobs');
-      const loadedJobs: Job[] = saved ? JSON.parse(saved) : [];
-      // Basic normalization for jobs if needed in the future
-      return loadedJobs;
+      const loadedJobs: any[] = saved ? JSON.parse(saved) : [];
+      return loadedJobs.map(normalizeJob);
     } catch (e) {
       console.error("Failed to load savedJobs from localStorage. Data might be corrupted or incompatible. Starting fresh.", e);
+      return [];
+    }
+  });
+
+  const [tailoredDocuments, setTailoredDocuments] = useState<TailoredDocument[]>(() => {
+    try {
+      const saved = localStorage.getItem('tailoredDocuments');
+      const loadedDocs: any[] = saved ? JSON.parse(saved) : [];
+      return loadedDocs.map(normalizeTailoredDocument);
+    } catch (e) {
+      console.error("Failed to load tailored documents from localStorage. Data might be corrupted or incompatible. Starting fresh.", e);
       return [];
     }
   });
@@ -135,8 +317,8 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
   const [chatHistory, setChatHistory] = useState<Message[]>(() => {
     try {
       const saved = localStorage.getItem('chatHistory');
-      const loadedHistory: Message[] = saved ? JSON.parse(saved) : [];
-      return loadedHistory;
+      const loadedHistory: any[] = saved ? JSON.parse(saved) : [];
+      return loadedHistory.map(normalizeMessage);
     } catch (e) {
       console.error("Failed to load chatHistory from localStorage. Data might be corrupted or incompatible. Starting fresh.", e);
       return [];
@@ -146,13 +328,8 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
   const [tasks, setTasks] = useState<Task[]>(() => {
     try {
       const saved = localStorage.getItem('tasks');
-      const loadedTasks: Task[] = saved ? JSON.parse(saved) : [];
-      return loadedTasks.map(task => ({
-        ...task,
-        priority: task.priority || 'Medium', // Ensure priority defaults
-        status: task.status || 'Pending', // Ensure status defaults
-        description: task.description || '', // Ensure description defaults
-      }));
+      const loadedTasks: any[] = saved ? JSON.parse(saved) : [];
+      return loadedTasks.map(normalizeTask);
     } catch (e) {
       console.error("Failed to load tasks from localStorage. Data might be corrupted or incompatible. Starting fresh.", e);
       return [];
@@ -162,7 +339,9 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
   const [frequentlySearchedKeywords, setFrequentlySearchedKeywords] = useState<string[]>(() => {
     try {
       const saved = localStorage.getItem('frequentlySearchedKeywords');
-      return saved ? JSON.parse(saved) : [];
+      const loadedKeywords: any[] = saved ? JSON.parse(saved) : [];
+      // Ensure it's an array of strings, filter out non-strings if any
+      return loadedKeywords.filter(item => typeof item === 'string');
     } catch (e) {
       console.error("Failed to load frequently searched keywords from localStorage. Data might be corrupted or incompatible. Starting fresh.", e);
       return [];
@@ -172,6 +351,7 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
   const [generationContext, setGenerationContext] = useState<GenerationContext | null>(null);
   const [selectedJobForViewing, setSelectedJobForViewing] = useState<Job | null>(null);
   const [selectedApplicationForInterview, setSelectedApplicationForInterview] = useState<Application | null>(null);
+  const [selectedTailoredDocumentId, setSelectedTailoredDocumentId] = useState<string | null>(null); // New state for selected tailored doc ID
 
   // New: State for onboarding tour
   const [isNewUser, setIsNewUserState] = useState<boolean>(() => {
@@ -242,6 +422,14 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
 
   useEffect(() => {
     try {
+      localStorage.setItem('tailoredDocuments', JSON.stringify(tailoredDocuments)); // New: Persist tailoredDocuments
+    } catch (e) {
+      console.error("Failed to save tailoredDocuments to localStorage.", e);
+    }
+  }, [tailoredDocuments]);
+
+  useEffect(() => {
+    try {
       localStorage.setItem('chatHistory', JSON.stringify(chatHistory));
     } catch (e) {
       console.error("Failed to save chatHistory to localStorage.", e);
@@ -276,6 +464,10 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     setApplications,
     savedJobs,
     setSavedJobs,
+    tailoredDocuments, // New: Add to context value
+    setTailoredDocuments, // New: Add to context value
+    selectedTailoredDocumentId, // New: Add to context value
+    setSelectedTailoredDocumentId, // New: Add to context value
     generationContext,
     setGenerationContext,
     selectedJobForViewing,

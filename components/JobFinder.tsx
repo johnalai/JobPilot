@@ -3,6 +3,7 @@ import { useAppContext } from '../context/AppContext';
 import { findJobs, FindJobsFilters, DOMAINS_TO_AVOID_AS_PRIMARY_SOURCE, getDomain } from '../services/geminiService';
 import { Job, WebGroundingChunk } from '../types';
 import { LoadingSpinner, BookmarkIcon, LocationMarkerIcon, CalendarIcon, BriefcaseIcon } from './icons';
+import CompanyInsightsDisplay from './CompanyInsightsDisplay'; // Import new component
 
 const initialFilters: FindJobsFilters = {
   query: '',
@@ -244,6 +245,23 @@ const JobFinder: React.FC = () => {
             {formattedMarkdown(job.description)}
         </div>
         {renderGroundingLinks(job.grounding)}
+
+        {/* Company Insights Display */}
+        <CompanyInsightsDisplay 
+            companyName={job.company} 
+            jobId={job.id} 
+            currentInsights={job.companyInsights}
+            onInsightsFetched={(companyInsights) => {
+              // Update the specific job in the `jobs` array
+              setJobs(prevJobs => prevJobs.map(j => 
+                j.id === job.id ? { ...j, companyInsights: companyInsights } : j
+              ));
+              // Also update the selected job in context if it's the same one
+              setSelectedJobForViewing(prevSelected => 
+                prevSelected?.id === job.id ? { ...prevSelected, companyInsights: companyInsights } : prevSelected
+              );
+            }}
+        />
       </div>
     </div>
   );

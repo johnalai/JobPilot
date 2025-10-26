@@ -1,11 +1,10 @@
-
 import React, { useState } from 'react';
 import { useAppContext } from '../context/AppContext';
-import { Application, ApplicationStatus } from '../types';
+import { Application, ApplicationStatus, TailoredDocumentType } from '../types';
 import { TrashIcon } from './icons';
 
 const MyApplications: React.FC = () => {
-  const { applications, setApplications, setView, setSelectedApplicationForInterview } = useAppContext();
+  const { applications, setApplications, setView, setSelectedApplicationForInterview, tailoredDocuments, setSelectedTailoredDocumentId, setError } = useAppContext();
   const [selectedApp, setSelectedApp] = useState<Application | null>(applications.length > 0 ? applications[0] : null);
 
   const handleDelete = (id: string) => {
@@ -25,6 +24,20 @@ const MyApplications: React.FC = () => {
   const handlePractice = (app: Application) => {
       setSelectedApplicationForInterview(app);
       setView('interview-coach');
+  };
+
+  const handleViewTailoredDocument = (documentId: string | undefined, documentType: TailoredDocumentType) => {
+    if (!documentId) {
+        setError(`No ${documentType} available for this application.`);
+        return;
+    }
+    const doc = tailoredDocuments.find(d => d.id === documentId);
+    if (doc) {
+        setSelectedTailoredDocumentId(doc.id);
+        setView('tailored-docs');
+    } else {
+        setError(`The ${documentType} for this application was not found in Tailored Documents. It might have been deleted.`);
+    }
   };
   
   const renderAppDetails = (app: Application) => (
@@ -52,8 +65,20 @@ const MyApplications: React.FC = () => {
           <div className="mt-4">
             <h4 className="font-semibold">Generated Assets</h4>
             <div className="flex gap-4 mt-2">
-                <button disabled={!app.generatedResume} className="text-sm font-semibold bg-gray-200 dark:bg-gray-700 hover:bg-gray-300 dark:hover:bg-gray-600 py-2 px-4 rounded-lg disabled:opacity-50">View Resume</button>
-                <button disabled={!app.generatedCoverLetter} className="text-sm font-semibold bg-gray-200 dark:bg-gray-700 hover:bg-gray-300 dark:hover:bg-gray-600 py-2 px-4 rounded-lg disabled:opacity-50">View Cover Letter</button>
+                <button 
+                  onClick={() => handleViewTailoredDocument(app.generatedResumeId, 'resume')} 
+                  disabled={!app.generatedResumeId} 
+                  className="text-sm font-semibold bg-gray-200 dark:bg-gray-700 hover:bg-gray-300 dark:hover:bg-gray-600 py-2 px-4 rounded-lg disabled:opacity-50"
+                >
+                  View Resume
+                </button>
+                <button 
+                  onClick={() => handleViewTailoredDocument(app.generatedCoverLetterId, 'coverLetter')} 
+                  disabled={!app.generatedCoverLetterId} 
+                  className="text-sm font-semibold bg-gray-200 dark:bg-gray-700 hover:bg-gray-300 dark:hover:bg-gray-600 py-2 px-4 rounded-lg disabled:opacity-50"
+                >
+                  View Cover Letter
+                </button>
             </div>
           </div>
           <div className="mt-auto pt-4 border-t dark:border-gray-700">

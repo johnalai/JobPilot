@@ -10,6 +10,7 @@ import { InterviewCoach } from './components/InterviewCoach';
 import ChatBot from './components/ChatBot';
 import SavedJobs from './components/SavedJobs';
 import TaskManager from './components/TaskManager';
+import TailoredDocuments from './components/TailoredDocuments'; // New: Import TailoredDocuments
 import { useAppContext } from './context/AppContext';
 import introJs from 'intro.js';
 
@@ -46,6 +47,11 @@ const App: React.FC = () => {
         {
           element: document.querySelector('[data-step="applications-nav"]') || undefined,
           intro: "Keep track of all your applications here, from draft to offer. You can update statuses and review generated documents.",
+          position: 'bottom',
+        },
+        {
+          element: document.querySelector('[data-step="tailored-docs-nav"]') || undefined, // New: Tailored Docs step
+          intro: "All your generated, tailored resumes and cover letters are saved and editable here.",
           position: 'bottom',
         },
         {
@@ -122,6 +128,8 @@ const App: React.FC = () => {
         return <SavedJobs />;
       case 'task-manager':
         return <TaskManager />;
+      case 'tailored-docs': // New view for tailored documents
+        return <TailoredDocuments />;
       default:
         return <Dashboard />;
     }

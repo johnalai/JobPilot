@@ -39,6 +39,133 @@
       background: none !important;
       text-decoration: underline !important;
     }
+
+    /* --- PDF Specific Styling --- */
+    /* Base styles for PDF printable content (always light theme) */
+    .pdf-content-wrapper {
+      font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, "Noto Sans", sans-serif, "Apple Color Emoji", "Segoe UI Emoji", "Segoe UI Symbol", "Noto Color Emoji";
+      line-height: 1.6;
+      color: #111827; /* gray-900 */
+      background-color: #ffffff; /* white */
+      font-size: 16px; /* base font size */
+      /* This defines the INNER content area. Margins will be applied by jspdf */
+      width: calc(8.5in - 2in); /* 6.5 inches of content width for 1-inch left/right margins on 8.5in page */
+      min-height: calc(11in - 2in); /* Min height for at least one full page printable area (9in) */
+      box-sizing: border-box; /* Ensure padding is included in width/height if added later */
+    }
+
+    /* Generic paragraph styling */
+    .pdf-content-wrapper p {
+      margin-bottom: 8px; /* mb-2 */
+    }
+
+    /* Headings */
+    .pdf-content-wrapper .pdf-header-block {
+      text-align: center;
+      margin-bottom: 24px; /* mb-6 */
+    }
+    .pdf-content-wrapper .pdf-h1 {
+      font-size: 32px; /* text-3xl */
+      font-weight: 700; /* font-bold */
+      margin-bottom: 4px; /* mb-1 */
+      line-height: 1.2;
+    }
+    .pdf-content-wrapper .pdf-h2 {
+      font-size: 20px; /* text-xl */
+      font-weight: 700; /* font-bold */
+      border-bottom: 2px solid #374151; /* border-b-2 border-gray-700 */
+      padding-bottom: 4px; /* pb-1 */
+      margin-bottom: 8px; /* mb-2 */
+      margin-top: 24px; /* mt-6 */
+    }
+    .pdf-content-wrapper .pdf-h3 {
+      font-size: 18px; /* text-lg */
+      font-weight: 600; /* font-semibold */
+      margin-bottom: 4px; /* mb-1 */
+    }
+    .pdf-content-wrapper .pdf-h4 {
+      font-size: 16px; /* base text, but bold */
+      font-weight: 600; /* font-semibold */
+      margin-bottom: 4px;
+    }
+
+    /* Lists */
+    .pdf-content-wrapper .pdf-ul {
+      list-style-type: disc;
+      list-style-position: inside;
+      margin-left: 16px; /* ml-4 */
+      margin-bottom: 8px;
+    }
+    .pdf-content-wrapper .pdf-li {
+      margin-bottom: 4px; /* mb-1 */
+    }
+
+    /* Text utility classes */
+    .pdf-content-wrapper .pdf-strong {
+      font-weight: 700; /* font-bold */
+    }
+    .pdf-content-wrapper .pdf-em {
+      font-style: italic;
+    }
+    .pdf-content-wrapper .pdf-text-sm {
+      font-size: 14px;
+    }
+    .pdf-content-wrapper .pdf-text-xs {
+      font-size: 12px;
+    }
+    .pdf-content-wrapper .pdf-italic {
+      font-style: italic;
+    }
+    .pdf-content-wrapper .pdf-text-center {
+      text-align: center;
+    }
+    .pdf-content-wrapper .pdf-text-right {
+      text-align: right;
+    }
+
+    /* Layout utilities */
+    .pdf-content-wrapper .pdf-mb-1 { margin-bottom: 4px; }
+    .pdf-content-wrapper .pdf-mb-2 { margin-bottom: 8px; }
+    .pdf-content-wrapper .pdf-mb-3 { margin-bottom: 12px; }
+    .pdf-content-wrapper .pdf-mb-4 { margin-bottom: 16px; }
+    .pdf-content-wrapper .pdf-mb-6 { margin-bottom: 24px; }
+    .pdf-content-wrapper .pdf-mt-1 { margin-top: 4px; }
+    .pdf-content-wrapper .pdf-mt-2 { margin-top: 8px; }
+    .pdf-content-wrapper .pdf-mt-4 { margin-top: 16px; }
+    .pdf-content-wrapper .pdf-mt-6 { margin-top: 24px; }
+    .pdf-content-wrapper .pdf-mt-8 { margin-top: 32px; }
+
+    .pdf-content-wrapper .pdf-flex { display: flex; }
+    .pdf-content-wrapper .pdf-justify-between { justify-content: space-between; }
+    .pdf-content-wrapper .pdf-items-baseline { align-items: baseline; }
+    .pdf-content-wrapper .pdf-gap-x-4 > * + * { margin-left: 16px; } /* gap-x-4 */
+    .pdf-content-wrapper .pdf-block { display: block; }
+    .pdf-content-wrapper .pdf-clear-both { clear: both; }
+
+    /* Custom styles for specific elements within resume/cover letter */
+    .pdf-content-wrapper .pdf-section {
+        margin-top: 24px; /* mt-6 */
+        margin-bottom: 16px; /* mb-4 */
+    }
+    .pdf-content-wrapper .pdf-experience-item,
+    .pdf-content-wrapper .pdf-education-item {
+        margin-bottom: 16px; /* mb-4 */
+        page-break-inside: avoid; /* Prevent breaking experience/education items across pages */
+    }
+    .pdf-content-wrapper .pdf-job-title,
+    .pdf-content-wrapper .pdf-degree-title {
+        font-weight: 600; /* font-semibold */
+        font-size: 1.1em;
+    }
+    .pdf-content-wrapper .pdf-company-name,
+    .pdf-content-wrapper .pdf-institution-name {
+        font-style: italic;
+        font-size: 1em;
+    }
+    .pdf-content-wrapper .pdf-location-date {
+        font-size: 0.9em;
+        color: #4b5563; /* gray-600 */
+    }
   </style>
   <script type="importmap">
 {

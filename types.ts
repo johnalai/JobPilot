@@ -22,7 +22,7 @@ export interface Task {
   priority: TaskPriority; // New: Added priority field
 }
 
-export type View = 'dashboard' | 'resume-hub' | 'job-finder' | 'saved-jobs' | 'applications' | 'application-generator' | 'interview-coach' | 'task-manager';
+export type View = 'dashboard' | 'resume-hub' | 'job-finder' | 'saved-jobs' | 'applications' | 'application-generator' | 'interview-coach' | 'task-manager' | 'tailored-docs'; // Added 'tailored-docs'
 
 export interface Experience {
   title: string;
@@ -40,7 +40,7 @@ export interface ResumeContent {
   skills: string[];
   experience: Experience[];
   education: Education[];
-  contactInfo?: { // New: Structured contact information
+  contactInfo: { // New: Structured contact information
     name: string;
     address: string;
     phone: string;
@@ -67,6 +67,18 @@ export interface ResumeTemplate {
   content: ResumeContent;
 }
 
+// New: Interface for Company Insights
+export interface CompanyInsights {
+  companyName: string;
+  industry?: string;
+  size?: string; // e.g., "1,001-5,000 employees"
+  headquarters?: string;
+  glassdoorRating?: number;
+  glassdoorUrl?: string;
+  recentNews?: string[]; // array of headlines/summaries
+  website?: string;
+}
+
 export interface Job {
   id: string;
   title: string;
@@ -77,6 +89,7 @@ export interface Job {
   datePosted?: string;
   sourceUrl?: string;
   grounding?: GroundingChunk[];
+  companyInsights?: CompanyInsights; // New: Add company insights field
 }
 
 export type ApplicationStatus = 'Not Started' | 'Draft' | 'Applied' | 'Submitted' | 'Interviewing' | 'Offer' | 'Rejected';
@@ -87,8 +100,8 @@ export interface Application {
   baseResumeId: string;
   status: ApplicationStatus;
   applicationDate: string;
-  generatedResume?: string;
-  generatedCoverLetter?: string;
+  generatedResumeId?: string; // Changed from string content to ID
+  generatedCoverLetterId?: string; // Changed from string content to ID
   atsScore?: {
     score: number;
     feedback: string;
@@ -98,6 +111,19 @@ export interface Application {
   };
 }
 
+// New: Types for Tailored Documents
+export type TailoredDocumentType = 'resume' | 'coverLetter';
+
+export interface TailoredDocument {
+  id: string;
+  name: string;
+  type: TailoredDocumentType;
+  content: string; // The raw generated text
+  jobId: string; // The ID of the job it was tailored for
+  jobTitle: string;
+  jobCompany: string;
+  generationDate: number; // Timestamp
+}
 
 export interface SkillGapAnalysis {
   matchingSkills: string[];

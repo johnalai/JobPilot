@@ -1,6 +1,6 @@
 import React from 'react';
 import { useAppContext } from '../context/AppContext';
-import { BriefcaseIcon, ResumeIcon, BookmarkIcon, ListUlIcon } from './icons';
+import { BriefcaseIcon, ResumeIcon, BookmarkIcon, ListUlIcon, PencilIcon } from './icons'; // Added PencilIcon
 import { View } from '../types';
 
 type NavItem = {
@@ -16,6 +16,7 @@ const navItems: NavItem[] = [
     { name: 'Find Jobs', view: 'job-finder', icon: BriefcaseIcon, dataStep: 'job-finder-nav' },
     { name: 'Saved Jobs', view: 'saved-jobs', icon: BookmarkIcon },
     { name: 'My Applications', view: 'applications', icon: BriefcaseIcon, dataStep: 'applications-nav' },
+    { name: 'Tailored Docs', view: 'tailored-docs', icon: PencilIcon, dataStep: 'tailored-docs-nav' }, // New: Tailored Docs
     { name: 'TaskManager', view: 'task-manager', icon: ListUlIcon },
 ];
 

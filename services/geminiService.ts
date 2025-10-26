@@ -1,5 +1,6 @@
 import { GoogleGenAI, Type, GenerateContentResponse, Chat, Modality, FunctionDeclaration, Tool } from "@google/genai";
-import { Job, Resume, ResumeContent, SkillGapAnalysis, GroundingChunk, Application, WebGroundingChunk } from '../types';
+// FIX: Import GroundingChunk type directly as it's used for type annotations.
+import { Job, Resume, ResumeContent, SkillGapAnalysis, Application, WebGroundingChunk, CompanyInsights, GroundingChunk } from '../types';
 
 // This interface is needed for findJobs, it's defined in JobFinder.tsx but better to have it here or in types.ts
 export interface FindJobsFilters {
@@ -31,21 +32,24 @@ export const getDomain = (url: string) => {
   }
 };
 
-// Helper to encode Uint8Array to base64
-function encode(bytes: Uint8Array) {
-  let binary = '';
-  const len = bytes.byteLength;
-  for (let i = 0; i < len; i++) {
-    binary += String.fromCharCode(bytes[i]);
-  }
-  return btoa(binary);
-}
-
 // Helper to clean LLM JSON response from markdown fences
 const cleanJsonResponse = (jsonString: string): string => {
   // Remove markdown code block fences if they exist
   const cleaned = jsonString.replace(/```json\n?|\n?```/g, '').trim();
   return cleaned;
+};
+
+// Helper to remove internal LLM instructions from generated text outputs
+const cleanLLMOutputInstructions = (text: string): string => {
+  let cleanedText = text;
+  // Remove explicit header markers and critical instructions
+  cleanedText = cleanedText.replace(/---START OF COVER LETTER HEADER---\n?/g, '');
+  cleanedText = cleanedText.replace(/\n?---END OF COVER LETTER HEADER---/g, '');
+  cleanedText = cleanedText.replace(/CRITICAL: The following complete header block must be used EXACTLY as provided, including all line breaks. Do NOT add or change anything in it.\n?/g, '');
+  cleanedText = cleanedText.replace(/CRITICAL: You MUST use the following complete header EXACTLY as provided, including all line breaks, at the very beginning of the cover letter. Do NOT add anything before it or modify its content.\n?/g, '');
+  cleanedText = cleanedText.replace(/Return ONLY the full cover letter text, starting with the header above, followed by the salutation and body. Do NOT include any additional comments, instructions, or introductory\/concluding remarks outside the letter itself.\n?/g, '');
+  // Clean up any remaining extra newlines at the start/end
+  return cleanedText.trim();
 };
 
 
@@ -104,9 +108,9 @@ export const parseResumeText = async (rawText: string): Promise<ResumeContent> =
               phone: { type: Type.STRING, description: "Candidate's phone number." },
               email: { type: Type.STRING, description: "Candidate's email address." },
             },
-            required: ['name', 'address', 'phone', 'email']
           }
-        }
+        },
+        required: ['skills', 'experience', 'education', 'contactInfo'] // FIX: Made contactInfo object itself required
       }
     }
   });
@@ -131,7 +135,8 @@ export const findJobs = async (filters: FindJobsFilters, resume: ResumeContent |
         prompt += `- Most Recent Role: ${resume.experience[0].title} at ${resume.experience[0].company}\n`;
       }
   }
-  prompt += "\nReturn a list of 5 job postings. For each job, provide a title, company, location, a **full, comprehensive, and essential description, capturing ALL available and essential details without any summarization or truncation**, and if possible, work model and date posted. DO NOT provide a source URL in this response.";
+  // FIX: Softened the description requirement for the initial prompt and increased job count
+  prompt += "\nReturn a list of up to 10 relevant job postings. For each job, provide a title, company, location, and a comprehensive job description, capturing all available essential details. DO NOT provide a source URL in this response.";
 
   const tools: Tool[] = [{ googleSearch: {} }];
 
@@ -170,6 +175,7 @@ export const findJobs = async (filters: FindJobsFilters, resume: ResumeContent |
     const extractionResponse = await ai.models.generateContent({
       model: 'gemini-2.5-flash',
       contents: `Extract the job postings from the following text into a clean JSON array. Each object should have 'title', 'company', 'location', 'description', 'workModel', 'datePosted'. If a field is not present, omit it. The 'description' should be as **comprehensive and detailed as possible, capturing ALL essential information.**
+      CRITICAL: Do NOT summarize the description; provide it in its entirety from the source.
       
       Text:
       ---
@@ -192,7 +198,8 @@ export const findJobs = async (filters: FindJobsFilters, resume: ResumeContent |
             },
             required: ['title', 'company', 'location', 'description']
           }
-        }
+        },
+        thinkingConfig: { thinkingBudget: 256 }, // FIX: Added thinking budget for JSON extraction
       }
     });
     extractionResponseText = extractionResponse.text;
@@ -316,9 +323,77 @@ export const findJobs = async (filters: FindJobsFilters, resume: ResumeContent |
   return jobs;
 };
 
+// For fetching company insights
+export const getCompanyInsights = async (companyName: string): Promise<CompanyInsights | null> => {
+    if (!companyName.trim()) {
+        throw new Error("Company name cannot be empty for insights search.");
+    }
+    
+    // Initialize GoogleGenAI instance *before* making the API call
+    const aiWithKey = new GoogleGenAI({ apiKey: process.env.API_KEY! });
+
+    const prompt = `Find company insights for "${companyName}". Extract the following information into a structured JSON object.
+    CRITICAL: The output MUST be a JSON object, wrapped in markdown code block fences (E.g., \`\`\`json\\n{...}\\n\`\`\`).
+    - Company Name (as provided)
+    - Industry (e.g., "Software Development", "Financial Services")
+    - Company Size (e.g., "1,001-5,000 employees")
+    - Headquarters location (City, State, Country)
+    - Glassdoor Rating (a single number, e.g., 4.2)
+    - Glassdoor URL (link to the company's Glassdoor profile)
+    - Recent News (a list of 2-3 concise headlines or summaries from recent articles, if available)
+    - Official Website URL
+
+    If information is not available, omit the field.
+    `;
+
+    let responseText = '';
+    try {
+      const response = await aiWithKey.models.generateContent({
+        model: 'gemini-2.5-flash',
+        contents: prompt,
+        config: {
+          tools: [{ googleSearch: {} }],
+          // responseMimeType: "application/json", // Removed as per guidelines for googleSearch tool
+          // responseSchema: { // Removed as per guidelines for googleSearch tool
+          //   type: Type.OBJECT,
+          //   properties: {
+          //     companyName: { type: Type.STRING, description: "The name of the company." },
+          //     industry: { type: Type.STRING, description: "The industry the company operates in." },
+          //     size: { type: Type.STRING, description: "The number of employees in the company." },
+          //     headquarters: { type: Type.STRING, description: "The main headquarters location of the company." },
+          //     glassdoorRating: { type: Type.NUMBER, description: "The average Glassdoor rating of the company." },
+          //     glassdoorUrl: { type: Type.STRING, description: "The URL to the company's Glassdoor profile." },
+          //     recentNews: {
+          //       type: Type.ARRAY,
+          //       items: { type: Type.STRING },
+          //       description: "2-3 recent news headlines or summaries about the company."
+          //     },
+          //     website: { type: Type.STRING, description: "The official website URL of the company." },
+          //   },
+          //   required: ['companyName'] // Only companyName is strictly required, others are optional
+          // },
+          thinkingConfig: { thinkingBudget: 256 }, // Added thinking budget for JSON extraction
+        },
+      });
+      responseText = response.text;
+    } catch (e: any) {
+      console.error("Gemini API call (company insights) failed for company:", companyName, "Error:", e);
+      throw new Error(e.message || "Failed to fetch company insights (AI service error).");
+    }
+
+    try {
+      const insights = JSON.parse(cleanJsonResponse(responseText));
+      return insights;
+    } catch (e: any) {
+      console.error("Failed to parse JSON response for company insights. Raw JSON output:", responseText, "Error:", e);
+      throw new Error("Failed to interpret company insights. AI returned invalid data. Raw response: " + responseText);
+    }
+};
+
 // For the chatbot
 export const getChatStream = async (message: string, history: { role: 'user' | 'model', parts: { text: string }[] }[]) => {
-    const aiChat = new GoogleGenAI({ apiKey: process.env.API_KEY! }); // New instance for chat
+    // FIX: Initialize GoogleGenAI inside the function to pick up latest API_KEY
+    const aiChat = new GoogleGenAI({ apiKey: process.env.API_KEY! });
     const chat: Chat = aiChat.chats.create({
         model: 'gemini-2.5-flash',
         config: {
@@ -366,6 +441,7 @@ export const analyzeJobUrl = async (url: string): Promise<Partial<Job>> => {
       const extractionResponse = await ai.models.generateContent({
           model: 'gemini-2.5-flash',
           contents: `From the following text, extract the job details into a JSON object. The 'description' should be as **comprehensive and detailed as possible, capturing ALL essential information.**
+          CRITICAL: Do NOT summarize the description; provide it in its entirety from the source.
           Text:
           ---
           ${initialResponseText}
@@ -382,7 +458,8 @@ export const analyzeJobUrl = async (url: string): Promise<Partial<Job>> => {
                       workModel: { type: Type.STRING },
                   },
                   required: ['title', 'company', 'location', 'description']
-              }
+              },
+              thinkingConfig: { thinkingBudget: 256 }, // FIX: Added thinking budget for JSON extraction
           }
       });
       extractionResponseText = extractionResponse.text;
@@ -469,6 +546,7 @@ export const analyzeJobText = async (text: string): Promise<Partial<Job>> => {
       const response = await ai.models.generateContent({
           model: 'gemini-2.5-flash',
           contents: `From the following job description text, extract the key details into a JSON object. The 'description' should be as **comprehensive and detailed as possible, capturing ALL essential information.**
+          CRITICAL: Do NOT summarize the description; provide it in its entirety from the source.
           Text:
           ---
           ${text}
@@ -485,7 +563,8 @@ export const analyzeJobText = async (text: string): Promise<Partial<Job>> => {
                       workModel: { type: Type.STRING },
                   },
                   required: ['title', 'company', 'location', 'description']
-              }
+              },
+              thinkingConfig: { thinkingBudget: 256 }, // FIX: Added thinking budget for JSON extraction
           }
       });
       responseText = response.text;
@@ -525,9 +604,17 @@ export const generateResumeForJob = async (job: Job, resumeContent: ResumeConten
     
     let finalPrompt = '';
     if (customHeader && customHeader.trim()) {
-      finalPrompt = `CRITICAL: Use the following header EXACTLY as provided at the very top of the resume. Do not add or change anything in the header.\n---CUSTOM HEADER---\n${customHeader}\n---END CUSTOM HEADER---\n\n` + basePrompt;
+      finalPrompt = `CRITICAL: Use the following header EXACTLY as provided at the very top of the resume. Do not add or change anything in the header.
+---CUSTOM HEADER START---
+${customHeader.trim()}
+---CUSTOM HEADER END---
+
+` + basePrompt;
     } else {
-      finalPrompt = `First, generate a professional header for a resume containing a name and contact information (e.g. Name, City, Phone, Email). Then, using that exact header, rewrite the resume based on the job description provided below.\n\n` + basePrompt;
+      finalPrompt = `First, generate a professional header for a resume containing a name and contact information (e.g. Name, City, Phone, Email). Then, using that exact header, rewrite the resume based on the job description provided below.
+CRITICAL: When generating the header, ensure it is professional and includes the candidate's name and full contact information (address, phone, email) if available in the base resume content.
+CRITICAL: Once generated, use this header EXACTLY as the first part of the resume.
+` + basePrompt;
     }
     
     const response = await ai.models.generateContent({ model: 'gemini-2.5-flash', contents: finalPrompt });
@@ -536,19 +623,36 @@ export const generateResumeForJob = async (job: Job, resumeContent: ResumeConten
 
 // For generating a tailored cover letter
 export const generateCoverLetterForJob = async (job: Job, resumeContent: ResumeContent, userTone: string, customHeader?: string): Promise<string> => {
-    let finalHeader = '';
+    let candidateInfoBlock = '';
     const today = new Date().toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' });
 
     if (customHeader && customHeader.trim()) {
-        finalHeader = `CRITICAL: Use the following header EXACTLY as provided at the very top of the cover letter. This header should be consistent with the one on the resume. Do not add or change anything in the header.\n---CUSTOM HEADER---\n${customHeader}\n---END CUSTOM HEADER---\n\n`;
+        candidateInfoBlock = customHeader.trim();
     } else if (resumeContent.contactInfo) {
-        // Construct header programmatically from parsed contactInfo
         const { name, address, phone, email } = resumeContent.contactInfo;
-        finalHeader = `${name || '[Your Name]'}\n${address || '[Your Address]'}\n${phone || ''} | ${email || ''}\n\n${today}\n\n`;
+        const candidateName = name || '[Your Name]';
+        const candidateAddress = address || '[Your Address]';
+        const contactLine = [phone, email].filter(Boolean).join(' | ');
+
+        // Ensure each part is on its own line and use placeholders if empty
+        candidateInfoBlock = [
+            candidateName,
+            candidateAddress,
+            contactLine,
+        ].filter(Boolean).join('\n'); // Filter out empty lines
     } else {
-        // Fallback to generic if no custom header and no parsed contact info
-        finalHeader = `[Your Name]\n[Your Address]\n[Your Phone] | [Your Email]\n\n${today}\n\n`;
+        candidateInfoBlock = `[Your Name]\n[Your Address]\n[Your Phone] | [Your Email]`;
     }
+
+    // Combine into a single, well-structured header string for the LLM
+    // This ensures two newlines after contact, and the date followed by two newlines
+    // FIX: Added explicit empty lines to ensure consistent spacing even if parts are missing, and strong critical instruction.
+    const formattedHeaderForLLM = `CRITICAL: The following complete header block must be used EXACTLY as provided, including all line breaks. Do NOT add or change anything in it.
+${candidateInfoBlock}
+
+${today}
+
+`; 
 
     let basePrompt = `
     Job Description:
@@ -567,17 +671,25 @@ export const generateCoverLetterForJob = async (job: Job, resumeContent: ResumeC
     Write a professional and compelling cover letter for the specified job, drawing from the candidate's resume.
     The tone should be ${userTone}. The letter should be concise (around 3-4 paragraphs) and tailored to the job description.
     Address why the candidate is a good fit for this specific role and company.
+    Begin the letter with "Dear Hiring Manager," or the appropriate recipient if implied by the job description, followed by the body.
     `;
     
-    // Prepend the constructed header to the prompt for the LLM
-    const finalPrompt = finalHeader + basePrompt + `\nReturn only the full cover letter text.`;
+    // Explicitly instruct the LLM to use the header exactly and return only the letter.
+    const finalPrompt = `CRITICAL: You MUST use the following complete header EXACTLY as provided, including all line breaks, at the very beginning of the cover letter. Do NOT add anything before it or modify its content.
+---START OF COVER LETTER HEADER---
+${formattedHeaderForLLM}---END OF COVER LETTER HEADER---
+
+${basePrompt.trim()}
+Return ONLY the full cover letter text, starting with the header above, followed by the salutation and body. Do NOT include any additional comments, instructions, or introductory/concluding remarks outside the letter itself.
+`;
 
     const response = await ai.models.generateContent({ model: 'gemini-2.5-flash', contents: finalPrompt });
-    return response.text;
+    return cleanLLMOutputInstructions(response.text); // Apply cleanup
 };
 
 export const analyzeATSCompliance = async (job: Job, generatedResume: string): Promise<Application['atsScore']> => {
-  const aiPro = new GoogleGenAI({ apiKey: process.env.API_KEY! }); // New instance for Pro model
+  // FIX: Initialize GoogleGenAI inside the function to pick up latest API_KEY
+  const aiPro = new GoogleGenAI({ apiKey: process.env.API_KEY! }); 
   const prompt = `Act as an advanced Applicant Tracking System (ATS). Analyze the provided tailored resume against the job description.
   Provide a score from 0 to 100 representing the match quality.
   Also provide concise feedback on why the score was given, focusing on keyword alignment and relevance of experience.
@@ -644,7 +756,8 @@ export const analyzeATSCompliance = async (job: Job, generatedResume: string): P
 
 // For skill gap analysis
 export const analyzeSkillGap = async (job: Job, resumeContent: ResumeContent): Promise<SkillGapAnalysis> => {
-  const aiPro = new GoogleGenAI({ apiKey: process.env.API_KEY! }); // New instance for Pro model
+  // FIX: Initialize GoogleGenAI inside the function to pick up latest API_KEY
+  const aiPro = new GoogleGenAI({ apiKey: process.env.API_KEY! }); 
   const prompt = `
     Job Description Keywords & Requirements:
     ---

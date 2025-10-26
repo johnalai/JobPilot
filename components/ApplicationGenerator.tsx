@@ -1,12 +1,12 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { useAppContext } from '../context/AppContext';
 import { generateResumeForJob, generateCoverLetterForJob, analyzeSkillGap, analyzeATSCompliance } from '../services/geminiService';
-import { SkillGapAnalysis, Application } from '../types';
+import { SkillGapAnalysis, Application, TailoredDocument, TailoredDocumentType } from '../types';
 import { LoadingSpinner } from './icons';
-import { downloadDocxFile, downloadElementAsPdf } from '../utils/fileUtils';
+import { downloadDocxFile } from '../utils/fileUtils';
 
 const ApplicationGenerator: React.FC = () => {
-  const { generationContext, setGenerationContext, setApplications, setView, setError } = useAppContext(); // Get global setError
+  const { generationContext, setGenerationContext, setApplications, setView, setError, setTailoredDocuments } = useAppContext(); // Get global setError and setTailoredDocuments
   
   const [generatedResume, setGeneratedResume] = useState<string>('');
   const [generatedCoverLetter, setGeneratedCoverLetter] = useState<string>('');
@@ -21,8 +21,7 @@ const ApplicationGenerator: React.FC = () => {
     coverLetter: false,
     ats: false,
   });
-  // Removed local error state, now using global setError
-  // const [error, setError] = useState<string | null>(null);
+  const [isSavingGenerated, setIsSavingGenerated] = useState(false); // New state for saving generated documents
 
   const { job, baseResume } = generationContext || {};
   const atsReportRef = useRef<HTMLDivElement>(null);
@@ -40,7 +39,7 @@ const ApplicationGenerator: React.FC = () => {
     } finally {
       setLoading(prev => ({ ...prev, analysis: false }));
     }
-  }, [job, baseResume, setError]);
+  }, [job, baseResume, skillAnalysis, setError]);
 
   const runATSAnalysis = useCallback(async (resumeText: string) => {
     if (!job) return;
@@ -86,6 +85,48 @@ const ApplicationGenerator: React.FC = () => {
     }
   }, [job, baseResume, coverLetterTone, customHeader, setError]);
 
+  // Updated: Function to save generated documents to tailoredDocuments
+  const handleSaveGeneratedDocument = async (documentContent: string, documentType: TailoredDocumentType) => {
+    if (!documentContent.trim()) {
+      setError(`No ${documentType} content to save.`);
+      console.log(`Attempted to save empty ${documentType}. Content was: "${documentContent}"`);
+      return;
+    }
+    if (!job) {
+      setError(`Cannot save ${documentType}: job context is missing.`);
+      return;
+    }
+
+    setIsSavingGenerated(true);
+    setError(null);
+
+    try {
+      const newTailoredDocument: TailoredDocument = {
+        id: `tailored-${documentType}-${Date.now()}`,
+        name: `${documentType === 'resume' ? 'Tailored Resume' : 'Cover Letter'} for ${job.title} at ${job.company}`,
+        type: documentType,
+        content: documentContent,
+        jobId: job.id,
+        jobTitle: job.title,
+        jobCompany: job.company,
+        generationDate: Date.now(),
+      };
+
+      setTailoredDocuments(prev => [...prev, newTailoredDocument]);
+      setError(`Successfully saved new ${documentType} to Tailored Documents!`);
+      console.log(`Saved new ${documentType}. Content preview: "${documentContent.substring(0, 100)}..."`);
+      // Optionally, navigate to Tailored Docs after saving
+      setView('tailored-docs');
+
+    } catch (e: any) {
+      setError(`Failed to save ${documentType}: ${e.message || 'Unknown error.'}`);
+      console.error(`Error saving ${documentType}:`, e);
+    } finally {
+      setIsSavingGenerated(false);
+    }
+  };
+
+
   useEffect(() => {
     // Automatically run skill analysis when component loads with context
     if (job && baseResume && !skillAnalysis) {
@@ -105,19 +146,60 @@ const ApplicationGenerator: React.FC = () => {
   }
 
   const handleSaveApplication = () => {
+    // Create new TailoredDocuments for the generated resume/cover letter if they exist
+    const newTailoredDocs: TailoredDocument[] = [];
+    let generatedResumeDocId: string | undefined;
+    let generatedCoverLetterDocId: string | undefined;
+
+    if (generatedResume.trim()) {
+      const resumeDoc: TailoredDocument = {
+        id: `tailored-resume-${Date.now()}-app`,
+        name: `Resume for ${job.title} at ${job.company} (Application)`,
+        type: 'resume',
+        content: generatedResume,
+        jobId: job.id,
+        jobTitle: job.title,
+        jobCompany: job.company,
+        generationDate: Date.now(),
+      };
+      newTailoredDocs.push(resumeDoc);
+      generatedResumeDocId = resumeDoc.id;
+    }
+
+    if (generatedCoverLetter.trim()) {
+      const coverLetterDoc: TailoredDocument = {
+        id: `tailored-coverletter-${Date.now()}-app`,
+        name: `Cover Letter for ${job.title} at ${job.company} (Application)`,
+        type: 'coverLetter',
+        content: generatedCoverLetter,
+        jobId: job.id,
+        jobTitle: job.title,
+        jobCompany: job.company,
+        generationDate: Date.now(),
+      };
+      newTailoredDocs.push(coverLetterDoc);
+      generatedCoverLetterDocId = coverLetterDoc.id;
+    }
+
+    // Add new tailored docs to global state
+    if (newTailoredDocs.length > 0) {
+      setTailoredDocuments(prev => [...prev, ...newTailoredDocs]);
+    }
+
     const newApplication: Application = {
       id: `app-${Date.now()}`,
       job: job,
       baseResumeId: baseResume.id,
       status: 'Draft',
       applicationDate: new Date().toISOString(),
-      generatedResume: generatedResume,
-      generatedCoverLetter: generatedCoverLetter,
+      generatedResumeId: generatedResumeDocId, // Store ID instead of content
+      generatedCoverLetterId: generatedCoverLetterDocId, // Store ID instead of content
       atsScore: atsScore,
     };
     setApplications(prev => [newApplication, ...prev]);
     setGenerationContext(null);
     setView('applications');
+    setError('Application saved successfully with generated documents!');
   };
   
   const getScoreColor = (score: number) => {
@@ -207,8 +289,8 @@ const ApplicationGenerator: React.FC = () => {
                         </div>
                     )}
 
-                     <button onClick={() => downloadElementAsPdf('ats-report-card', `${job.company}-${job.title}-ATS-Report.pdf`)} className="mt-4 w-full bg-gray-200 dark:bg-gray-700 hover:bg-gray-300 dark:hover:bg-gray-600 font-bold py-2 px-4 rounded-lg text-sm">
-                        Download Report
+                     <button onClick={() => downloadDocxFile(`${job.company}-${job.title}-ATS-Report.docx`, atsReportRef.current?.innerText || '')} className="mt-4 w-full bg-gray-200 dark:bg-gray-700 hover:bg-gray-300 dark:hover:bg-gray-600 font-bold py-2 px-4 rounded-lg text-sm">
+                        Download Report (DOCX)
                     </button>
                 </div>
               ) : <p className="text-sm text-gray-500 text-center">Generate a resume to see the ATS report.</p>
@@ -254,6 +336,9 @@ const ApplicationGenerator: React.FC = () => {
                     <button onClick={() => downloadDocxFile(`${job.company}-${job.title}-Resume.docx`, generatedResume)} disabled={!generatedResume} className="bg-gray-200 dark:bg-gray-700 hover:bg-gray-300 dark:hover:bg-gray-600 font-bold py-2 px-4 rounded-lg text-sm disabled:opacity-50">
                         Download DOCX
                     </button>
+                    <button onClick={() => handleSaveGeneratedDocument(generatedResume, 'resume')} disabled={!generatedResume || isSavingGenerated} className="bg-purple-600 hover:bg-purple-700 text-white font-bold py-2 px-4 rounded-lg text-sm disabled:opacity-50">
+                        {isSavingGenerated ? <LoadingSpinner className="w-5 h-5" /> : 'Save to Tailored Docs'}
+                    </button>
                 </div>
             </div>
             <textarea readOnly value={generatedResume || 'Enter a custom header (optional) and click "Generate" to create a resume tailored for this job.'} className="w-full h-96 p-3 border rounded-lg bg-gray-50 dark:bg-gray-700/50 font-mono text-sm" />
@@ -275,14 +360,15 @@ const ApplicationGenerator: React.FC = () => {
                     <button onClick={() => downloadDocxFile(`${job.company}-${job.title}-CoverLetter.docx`, generatedCoverLetter)} disabled={!generatedCoverLetter} className="bg-gray-200 dark:bg-gray-700 hover:bg-gray-300 dark:hover:bg-gray-600 font-bold py-2 px-4 rounded-lg text-sm disabled:opacity-50">
                         Download DOCX
                     </button>
+                    <button onClick={() => handleSaveGeneratedDocument(generatedCoverLetter, 'coverLetter')} disabled={!generatedCoverLetter || isSavingGenerated} className="bg-purple-600 hover:bg-purple-700 text-white font-bold py-2 px-4 rounded-lg text-sm disabled:opacity-50">
+                        {isSavingGenerated ? <LoadingSpinner className="w-5 h-5" /> : 'Save to Tailored Docs'}
+                    </button>
                 </div>
             </div>
             <textarea readOnly value={generatedCoverLetter || 'Enter a custom header (optional), select a tone, and click "Generate" to create a cover letter.'} className="w-full h-96 p-3 border rounded-lg bg-gray-50 dark:bg-gray-700/50 font-mono text-sm" />
           </div>
         </div>
       </div>
-      {/* Removed local error display, now using global error in App.tsx */}
-      {/* {error && <p className="fixed bottom-4 left-1/2 -translate-x-1/2 bg-red-500 text-white py-2 px-4 rounded-lg shadow-lg">{error}</p>} */}
     </div>
   );
 };
