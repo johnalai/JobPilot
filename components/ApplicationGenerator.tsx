@@ -98,7 +98,7 @@ const ApplicationGenerator: React.FC = () => {
     }
 
     setIsSavingGenerated(true);
-    setError(null);
+    setError(null); // Clear any previous error
 
     try {
       const newTailoredDocument: TailoredDocument = {
@@ -113,11 +113,9 @@ const ApplicationGenerator: React.FC = () => {
       };
 
       setTailoredDocuments(prev => [...prev, newTailoredDocument]);
-      setError(`Successfully saved new ${documentType} to Tailored Documents!`);
+      setError(`Successfully saved new ${documentType} to Tailored Documents!`); // Set success message
       console.log(`Saved new ${documentType}. Content preview: "${documentContent.substring(0, 100)}..."`);
-      // Optionally, navigate to Tailored Docs after saving
-      setView('tailored-docs');
-
+      // REMOVED: setView('tailored-docs'); - Do not navigate away immediately
     } catch (e: any) {
       setError(`Failed to save ${documentType}: ${e.message || 'Unknown error.'}`);
       console.error(`Error saving ${documentType}:`, e);

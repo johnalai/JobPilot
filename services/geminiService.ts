@@ -135,8 +135,8 @@ export const findJobs = async (filters: FindJobsFilters, resume: ResumeContent |
         prompt += `- Most Recent Role: ${resume.experience[0].title} at ${resume.experience[0].company}\n`;
       }
   }
-  // FIX: Softened the description requirement for the initial prompt and increased job count
-  prompt += "\nReturn a list of up to 10 relevant job postings. For each job, provide a title, company, location, and a comprehensive job description, capturing all available essential details. DO NOT provide a source URL in this response.";
+  // FIX: Removed the "up to 10" limit from the prompt.
+  prompt += "\nReturn a comprehensive list of all relevant job postings. For each job, provide a title, company, location, and a comprehensive job description, capturing all available essential details. DO NOT provide a source URL in this response.";
 
   const tools: Tool[] = [{ googleSearch: {} }];
 
@@ -149,6 +149,7 @@ export const findJobs = async (filters: FindJobsFilters, resume: ResumeContent |
       contents: prompt,
       config: {
         tools: tools,
+        thinkingConfig: { thinkingBudget: 512 }, // Increased thinking budget to allow for more comprehensive results
       },
     });
     initialResponseText = response.text;
@@ -479,6 +480,7 @@ export const analyzeJobUrl = async (url: string): Promise<Partial<Job>> => {
     // Filter out undesirable domains from the global grounding chunks
     const filteredGrounding = globalGroundingChunks.filter(chunk => {
         if ('web' in chunk && chunk.web?.uri) {
+            // FIX: Use chunk.web.uri directly here as `uri` is not in scope.
             return !DOMAINS_TO_AVOID_AS_PRIMARY_SOURCE.some(domain => getDomain(chunk.web.uri).includes(domain));
         }
         return false; // Only keep valid web chunks
@@ -680,7 +682,7 @@ ${today}
 ${formattedHeaderForLLM}---END OF COVER LETTER HEADER---
 
 ${basePrompt.trim()}
-Return ONLY the full cover letter text, starting with the header above, followed by the salutation and body. Do NOT include any additional comments, instructions, or introductory/concluding remarks outside the letter itself.
+Return ONLY the full cover letter text, starting with the header above, followed by the salutation and body. Do NOT include any additional comments, instructions, or introductory\/concluding remarks outside the letter itself.
 `;
 
     const response = await ai.models.generateContent({ model: 'gemini-2.5-flash', contents: finalPrompt });

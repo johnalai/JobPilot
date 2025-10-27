@@ -215,6 +215,104 @@ function formReducer(state: FormState, action: FormAction): FormState {
 }
 // --- End useReducer definitions ---
 
+// Helper to render structured resume content for PDF (reused by TailoredDocuments and ResumeHub)
+// This will render the content in a structured way using the parsed ResumeContent object
+export const renderResumeHtmlForPdf = (resumeContent: ResumeContent) => {
+    let htmlOutput = '';
+    const formatMarkdown = (text: string) => {
+        if (!text) return '';
+        let processedText = text.replace(/\*\*(.*?)\*\*/g, '<span class="pdf-strong">$1</span>');
+        processedText = processedText.replace(/\*(.*?)\*/g, '<span class="pdf-em">$1</span>');
+        return processedText;
+    };
+
+    // Contact Information
+    if (resumeContent.contactInfo && (resumeContent.contactInfo.name || resumeContent.contactInfo.address || resumeContent.contactInfo.phone || resumeContent.contactInfo.email)) {
+        htmlOutput += `<div class="pdf-header-block">`;
+        if (resumeContent.contactInfo.name) {
+            htmlOutput += `<h1 class="pdf-h1">${formatMarkdown(resumeContent.contactInfo.name)}</h1>`;
+        }
+        const contactDetails = [
+            resumeContent.contactInfo.address,
+            [resumeContent.contactInfo.phone, resumeContent.contactInfo.email].filter(Boolean).join(' | ')
+        ].filter(Boolean);
+        if (contactDetails.length > 0) {
+            htmlOutput += `<p class="pdf-text-lg">${contactDetails.map(d => formatMarkdown(d)).join(' | ')}</p>`;
+        }
+        htmlOutput += `</div>`;
+    }
+
+    // Summary (extracted from rawText, as parseResumeText doesn't explicitly return summary)
+    const rawTextLines = resumeContent.rawText.split('\n');
+    let summaryLines: string[] = [];
+    let inSummarySection = false;
+    for (const line of rawTextLines) {
+        const trimmedLine = line.trim();
+        if (trimmedLine.toLowerCase().startsWith('summary') || trimmedLine.toLowerCase().startsWith('profile')) {
+            inSummarySection = true;
+            continue;
+        }
+        if (inSummarySection && (trimmedLine.toLowerCase().startsWith('skills') || trimmedLine.toLowerCase().startsWith('experience') || trimmedLine.toLowerCase().startsWith('education'))) {
+            inSummarySection = false;
+        }
+        if (inSummarySection && trimmedLine) {
+            summaryLines.push(trimmedLine);
+        }
+    }
+    if (summaryLines.length > 0) {
+        htmlOutput += `<div class="pdf-section">
+            <h2 class="pdf-h2">Summary</h2>
+            ${summaryLines.map(p => `<p class="pdf-p pdf-text-sm">${formatMarkdown(p)}</p>`).join('')}
+        </div>`;
+    }
+
+    // Skills
+    if (resumeContent.skills && resumeContent.skills.length > 0) {
+        htmlOutput += `<div class="pdf-section">
+            <h2 class="pdf-h2">Skills</h2>
+            <p class="pdf-p pdf-text-sm">${formatMarkdown(resumeContent.skills.join(' • '))}</p>
+        </div>`;
+    }
+
+    // Experience
+    if (resumeContent.experience && resumeContent.experience.length > 0) {
+        htmlOutput += `<div class="pdf-section">
+            <h2 class="pdf-h2">Experience</h2>`;
+        resumeContent.experience.forEach(exp => {
+            htmlOutput += `<div class="pdf-experience-item">
+                <div class="pdf-flex pdf-justify-between pdf-items-baseline">
+                    <h3 class="pdf-job-title">${formatMarkdown(exp.title)}</h3>
+                    <p class="pdf-company-name pdf-text-sm">${formatMarkdown(exp.company)}</p>
+                </div>
+                <ul class="pdf-ul">`;
+            // Split description by newlines for bullet points if present, otherwise treat as single paragraph
+            exp.description.split('\n').filter(Boolean).forEach(descLine => {
+                htmlOutput += `<li class="pdf-li pdf-text-sm">${formatMarkdown(descLine.replace(/^(•|-|\d+\.)\s*/, ''))}</li>`;
+            });
+            htmlOutput += `</ul>
+            </div>`;
+        });
+        htmlOutput += `</div>`;
+    }
+
+    // Education
+    if (resumeContent.education && resumeContent.education.length > 0) {
+        htmlOutput += `<div class="pdf-section">
+            <h2 class="pdf-h2">Education</h2>`;
+        resumeContent.education.forEach(edu => {
+            htmlOutput += `<div class="pdf-education-item">
+                <div class="pdf-flex pdf-justify-between pdf-items-baseline">
+                    <h3 class="pdf-degree-title">${formatMarkdown(edu.degree)}</h3>
+                    <p class="pdf-institution-name pdf-text-sm">${formatMarkdown(edu.institution)}</p>
+                </div>
+            </div>`;
+        });
+        htmlOutput += `</div>`;
+    }
+
+    return htmlOutput;
+};
+
 
 const ResumeHub: React.FC = () => {
   const { resumes, setResumes, defaultResumeId, setDefaultResumeId, setError: setGlobalError } = useAppContext(); // Get global setError
@@ -241,8 +339,9 @@ const ResumeHub: React.FC = () => {
       // If no resume selected but in 'add' view, clear form for a new resume
       dispatch({ type: 'RESET_FORM' }); 
     }
-    // Also, when switching views, ensure edit name state is off
+    // Also, when switching views or selected resume, ensure edit name state is off
     setIsEditingName(false);
+    setCurrentEditedName('');
   }, [view, selectedResumeId, resumes, selectedResume]); // Add selectedResume to dependencies
 
 
@@ -517,7 +616,20 @@ const ResumeHub: React.FC = () => {
 
   const handleDownloadPdf = () => {
     if (selectedResume) {
-        downloadElementAsPdf('printable-resume-content', `${selectedResume.name}-Resume.pdf`);
+        // Use the new renderResumeHtmlForPdf directly for the printable content
+        const printableHtml = renderResumeHtmlForPdf(selectedResume.activeContent);
+        // Create a temporary div to render the HTML into for html2canvas
+        const tempDiv = document.createElement('div');
+        tempDiv.innerHTML = printableHtml;
+        tempDiv.id = 'temp-printable-resume-content'; // Give it an ID for downloadElementAsPdf
+
+        // Temporarily append to body to be captured, then remove
+        document.body.appendChild(tempDiv);
+
+        downloadElementAsPdf('temp-printable-resume-content', `${selectedResume.name}-Resume.pdf`)
+            .finally(() => {
+                document.body.removeChild(tempDiv); // Clean up
+            });
     } else {
         setGlobalError("No resume selected to download as PDF."); // Use global setError
     }
@@ -761,46 +873,7 @@ const ResumeHub: React.FC = () => {
       {formError && <p className="fixed bottom-4 left-1/2 -translate-x-1/2 bg-red-500 text-white py-2 px-4 rounded-lg shadow-lg z-50">{formError}</p>}
       {statusMessage && <p className="fixed bottom-4 left-1/2 -translate-x-1/2 bg-green-500 text-white py-2 px-4 rounded-lg shadow-lg z-50">{statusMessage}</p>}
 
-      {/* Hidden div for PDF generation */}
-      <div className="absolute -left-[9999px] top-0" id="printable-resume-content">
-        {selectedResume && (
-          <div className="pdf-content-wrapper">
-            {/* The renderPrintableContent function from TailoredDocuments.tsx is the canonical way to render this.
-                Duplicating the logic here would be a maintenance nightmare.
-                Instead, we rely on the generic structure and styling from the pdf-content-wrapper.
-                For ResumeHub, we simply ensure the core contact info is there. */}
-            {selectedResume.activeContent.contactInfo && (
-              <div className="pdf-header-block">
-                <h1 className="pdf-h1">{selectedResume.activeContent.contactInfo.name || 'Your Name'}</h1>
-                {selectedResume.activeContent.contactInfo.address && <p className="pdf-text-lg">{selectedResume.activeContent.contactInfo.address}</p>}
-                {(selectedResume.activeContent.contactInfo.phone || selectedResume.activeContent.contactInfo.email) && (
-                  <p className="pdf-text-lg">
-                    {selectedResume.activeContent.contactInfo.phone}
-                    {(selectedResume.activeContent.contactInfo.phone && selectedResume.activeContent.contactInfo.email) ? ' • ' : ''}
-                    {selectedResume.activeContent.contactInfo.email}
-                  </p>
-                )}
-              </div>
-            )}
-
-            {/* General Content sections */}
-            {selectedResume.activeContent.rawText.split('\n').map((line, index) => {
-                const trimmedLine = line.trim();
-                if (trimmedLine.length === 0) return <p key={`blank-${index}`} className="pdf-mb-1">&nbsp;</p>; // Preserve blank lines
-
-                // Simple heuristic to differentiate main sections from plain text
-                if (trimmedLine.match(/^(Summary|Skills|Experience|Education|Projects|Awards|Certifications):?$/i)) {
-                    return <h2 key={index} className="pdf-h2 pdf-mt-4">{trimmedLine}</h2>;
-                }
-                // Try to catch common bullet formats
-                if (trimmedLine.startsWith('* ') || trimmedLine.startsWith('- ') || trimmedLine.match(/^\d+\.\s/)) {
-                    return <ul key={index} className="pdf-ul"><li className="pdf-li pdf-text-sm">{trimmedLine.replace(/^((\*|-|\d+\.)\s*)/, '')}</li></ul>;
-                }
-                return <p key={index} className="pdf-p pdf-text-sm">{trimmedLine}</p>;
-            })}
-          </div>
-        )}
-      </div>
+      {/* The hidden div with id="printable-resume-content" is no longer needed here as handleDownloadPdf now creates a temporary div */}
     </div>
   );
 };

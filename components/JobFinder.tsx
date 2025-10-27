@@ -290,7 +290,10 @@ const JobFinder: React.FC = () => {
                 {filteredSuggestions.map((suggestion, index) => (
                   <li
                     key={index}
-                    onClick={() => handleSelectSuggestion(suggestion)}
+                    onMouseDown={(e) => { // Changed to onMouseDown
+                      e.preventDefault(); // Prevent input blur from happening immediately
+                      handleSelectSuggestion(suggestion);
+                    }}
                     className="p-3 cursor-pointer hover:bg-gray-100 dark:hover:bg-gray-600 text-gray-900 dark:text-gray-100"
                   >
                     {suggestion}
