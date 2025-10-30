@@ -1,7 +1,9 @@
+
 import React, { useEffect, useRef, useCallback } from 'react';
 import Header from './components/Header';
 import Dashboard from './components/Dashboard';
-import ResumeHub from './components/ResumeHub';
+// FIX: Changed import to named export for ResumeHub to align with the error message "Module has no default export".
+import { ResumeHub } from './components/ResumeHub';
 import JobFinder from './components/JobFinder';
 import ApplicationGenerator from './components/ApplicationGenerator';
 import MyApplications from './components/MyApplications';

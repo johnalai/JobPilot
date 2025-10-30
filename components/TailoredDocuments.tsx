@@ -1,85 +1,97 @@
-import React, { useState, useRef, useEffect } from 'react';
+
+
+import React, { useState, useRef, useEffect, JSX } from 'react';
 import { useAppContext } from '../context/AppContext';
 import { TailoredDocument, TailoredDocumentType, ResumeContent } from '../types';
-import { downloadDocxFile, downloadElementAsPdf } from '../utils/fileUtils';
+import { downloadDocxFile } from '../utils/fileUtils'; // Removed downloadElementAsPdf
 import { LoadingSpinner, TrashIcon, PencilIcon, BriefcaseIcon, ResumeIcon } from './icons';
-import { renderResumeHtmlForPdf } from './ResumeHub'; // Import the new structured resume renderer
+import { parseResumeText } from '../services/geminiService'; // Import parseResumeText
 
-// Helper to render basic markdown-like formatting for PDF export
-const renderPrintableContent = (content: string, type: TailoredDocumentType, resumeContent?: ResumeContent) => {
-  let htmlOutput = '';
-  // Basic markdown for strong and emphasis
-  const formatMarkdown = (text: string) => {
-    if (!text) return ''; // Defensive check
-    let processedText = text.replace(/\*\*(.*?)\*\*/g, '<span class="pdf-strong">$1</span>');
-    processedText = processedText.replace(/\*(.*?)\*/g, '<span class="pdf-em">$1</span>');
-    return processedText;
-  };
+// Helper to render basic markdown-like formatting for display
+const renderDisplayContent = (text: string) => {
+    const parts = text.split('\n');
+    let htmlContent: (JSX.Element | string)[] = [];
+    let currentList: string[] = [];
 
-  if (type === 'resume') {
-    if (resumeContent) {
-      // Use the structured renderer for resumes if ResumeContent is available
-      htmlOutput = renderResumeHtmlForPdf(resumeContent);
-    } else {
-      // Fallback: If resumeContent isn't provided (e.g., older document), render raw text with basic paragraph formatting
-      htmlOutput = `<div class="pdf-content-wrapper">`;
-      content.split('\n\n').forEach((paragraph, pIdx) => {
-        if (paragraph.trim()) {
-          htmlOutput += `<p class="pdf-p pdf-text-sm">${formatMarkdown(paragraph.split('\n').map(line => line.trim()).filter(Boolean).join(' '))}</p>`;
-        }
-      });
-      htmlOutput += `</div>`;
-    }
-  } else { // coverLetter
-    const paragraphs = content.split('\n\n'); // Split by double newline for distinct paragraphs
-    
-    htmlOutput += `<div class="pdf-content-wrapper">`;
-    paragraphs.forEach((paragraph, index) => {
-      const trimmedParagraph = paragraph.trim();
-      if (trimmedParagraph) {
-        // Handle lines within a paragraph, applying markdown and simple line breaks
-        const formattedLines = trimmedParagraph.split('\n').map(line => formatMarkdown(line)).join('<br/>');
-        htmlOutput += `<p class="pdf-p">${formattedLines}</p>`;
+    const flushList = () => {
+      if (currentList.length > 0) {
+        htmlContent.push(
+          <ul key={`ul-${htmlContent.length}`} className="list-disc list-inside ml-4 mb-2 text-gray-700 dark:text-gray-300">
+            {currentList.map((item, idx) => {
+              let processedItem = item.replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>');
+              processedItem = processedItem.replace(/\*(.*?)\*/g, '<em>$1</em>');
+              return <li key={idx} dangerouslySetInnerHTML={{ __html: processedItem.trim() }} />;
+            })}
+          </ul>
+        );
+        currentList = [];
+      }
+    };
+
+    parts.forEach((line, index) => {
+      const trimmedLine = line.trim();
+      if (trimmedLine.startsWith('# ')) {
+        flushList();
+        const processedLine = trimmedLine.substring(2).replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>');
+        htmlContent.push(<h1 key={index} className="text-3xl font-bold mb-2 text-gray-900 dark:text-white text-center" dangerouslySetInnerHTML={{ __html: processedLine }} />);
+      } else if (trimmedLine.startsWith('## ')) {
+        flushList();
+        const processedLine = trimmedLine.substring(3).replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>');
+        htmlContent.push(<h2 key={index} className="text-2xl font-bold mt-4 mb-2 text-gray-800 dark:text-white" dangerouslySetInnerHTML={{ __html: processedLine }} />);
+      }
+      else if (trimmedLine.startsWith('* ') || trimmedLine.startsWith('- ')) {
+        currentList.push(trimmedLine.substring(2));
       } else {
-        htmlOutput += `<p class="pdf-mb-1">&nbsp;</p>`; // Preserve empty lines between paragraphs
+        flushList();
+        if (trimmedLine.length > 0) {
+          let processedLine = trimmedLine.replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>');
+          processedLine = processedLine.replace(/\*(.*?)\*/g, '<em>$1</em>');
+          htmlContent.push(<p key={index} dangerouslySetInnerHTML={{ __html: processedLine }} className="mb-2 text-gray-700 dark:text-gray-300" />);
+        } else {
+          htmlContent.push(<br key={index} />);
+        }
       }
     });
-    htmlOutput += `</div>`;
-  }
+    flushList(); // Flush any remaining list items
 
-  return htmlOutput;
-};
+    return htmlContent;
+  };
+
 
 const TailoredDocuments: React.FC = () => {
-  const { tailoredDocuments, setTailoredDocuments, setError, selectedTailoredDocumentId, setSelectedTailoredDocumentId } = useAppContext();
+  const { tailoredDocuments, setTailoredDocuments, setError, selectedTailoredDocumentId, setSelectedTailoredDocumentId, resumes, defaultResumeId } = useAppContext();
   const [selectedDocument, setSelectedDocument] = useState<TailoredDocument | null>(null);
   const [editedContent, setEditedContent] = useState<string>('');
   const [isEditing, setIsEditing] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
+  // Removed parsedResumeForPdf state as PDF is deprecated
 
-  const printableDivRef = useRef<HTMLDivElement>(null);
+  const defaultResume = resumes.find(r => r.id === defaultResumeId);
 
   // Effect to react to selectedTailoredDocumentId from AppContext
   useEffect(() => {
-    if (selectedTailoredDocumentId) {
-      const doc = tailoredDocuments.find(d => d.id === selectedTailoredDocumentId);
-      if (doc) {
-        setSelectedDocument(doc);
-        setEditedContent(doc.content);
-        setIsEditing(false); // Always start in view mode when navigated
-        setError(null);
-      } else {
-        // If ID is set but document not found (e.g., deleted), clear selection
-        setSelectedDocument(null);
-        setEditedContent('');
-        setSelectedTailoredDocumentId(null); // Clear context ID
-        setError("Selected tailored document not found or was deleted.");
+    const fetchDocument = () => {
+      if (selectedTailoredDocumentId) {
+        const doc = tailoredDocuments.find(d => d.id === selectedTailoredDocumentId);
+        if (doc) {
+          setSelectedDocument(doc);
+          setEditedContent(doc.content);
+          setIsEditing(false); // Always start in view mode when navigated
+          setError(null);
+        } else {
+          // If ID is set but document not found (e.g., deleted), clear selection
+          setSelectedDocument(null);
+          setEditedContent('');
+          setSelectedTailoredDocumentId(null); // Clear context ID
+          setError("Selected tailored document not found or was deleted.");
+        }
+      } else if (!selectedDocument) {
+          // If no ID is set globally and no local selection, ensure content is empty
+          setEditedContent('');
       }
-    } else if (!selectedDocument) {
-        // If no ID is set globally and no local selection, ensure content is empty
-        setEditedContent('');
-    }
-  }, [selectedTailoredDocumentId, tailoredDocuments, setError, setSelectedTailoredDocumentId, selectedDocument]); // Added selectedDocument to deps for proper reset
+    };
+    fetchDocument();
+  }, [selectedTailoredDocumentId, tailoredDocuments, setError, setSelectedTailoredDocumentId, selectedDocument]); // Added selectedDocument to dependencies to avoid stale closure
 
   const handleSelectDocument = (doc: TailoredDocument) => {
     setSelectedDocument(doc);
@@ -89,7 +101,7 @@ const TailoredDocuments: React.FC = () => {
     setSelectedTailoredDocumentId(doc.id); // Update context when selected locally
   };
 
-  const handleSaveEdits = () => {
+  const handleSaveEdits = async () => { 
     if (!selectedDocument || !editedContent.trim()) {
       setError("No document selected or content is empty.");
       return;
@@ -124,38 +136,12 @@ const TailoredDocuments: React.FC = () => {
   const handleDownloadDocx = () => {
     if (selectedDocument) {
       downloadDocxFile(`${selectedDocument.name}.docx`, editedContent);
-      // Removed setError("Downloading DOCX...") as it's not an error
     } else {
       setError("No document selected for download.");
     }
   };
 
-  const handleDownloadPdf = () => {
-    if (selectedDocument && printableDivRef.current) {
-        // Create a temporary div for PDF content, as `printableDivRef.current` might not have structured content
-        const tempPdfContentDiv = document.createElement('div');
-        tempPdfContentDiv.id = 'temp-pdf-content';
-        tempPdfContentDiv.innerHTML = renderPrintableContent(
-            selectedDocument.content,
-            selectedDocument.type,
-            // Pass resume content if it's a resume. This requires fetching the resume first.
-            selectedDocument.type === 'resume' ? null : undefined // Currently, we don't store parsed content in TailoredDocument. This will need adjustment if needed.
-                                                                // For now, renderResumeHtmlForPdf expects ResumeContent directly.
-                                                                // For Tailored Docs, we will render from the 'content' string itself.
-        );
-
-        // Append to body temporarily
-        document.body.appendChild(tempPdfContentDiv);
-
-        downloadElementAsPdf('temp-pdf-content', `${selectedDocument.name}.pdf`)
-            .finally(() => {
-                // Clean up the temporary div
-                document.body.removeChild(tempPdfContentDiv);
-            });
-    } else {
-      setError("No document selected for PDF download.");
-    }
-  };
+  // handleDownloadPdf function removed
 
   return (
     <div className="max-w-7xl mx-auto space-y-8">
@@ -208,9 +194,7 @@ const TailoredDocuments: React.FC = () => {
                   <button onClick={handleDownloadDocx} disabled={isSaving} className="bg-gray-200 dark:bg-gray-700 hover:bg-gray-300 dark:hover:bg-gray-600 font-bold py-2 px-4 rounded-lg text-sm disabled:opacity-50">
                     Download DOCX
                   </button>
-                  <button onClick={handleDownloadPdf} disabled={isSaving} className="bg-red-600 hover:bg-red-700 text-white font-bold py-2 px-4 rounded-lg text-sm disabled:opacity-50">
-                    Download PDF
-                  </button>
+                  {/* PDF Download Button Removed */}
                 </div>
               </div>
 
@@ -232,17 +216,7 @@ const TailoredDocuments: React.FC = () => {
                 </div>
               ) : (
                 <div className="prose dark:prose-invert max-w-none w-full h-96 p-3 border rounded-lg bg-gray-50 dark:bg-gray-700/50 overflow-y-auto">
-                  {/* Render content for viewing, using basic paragraph splits */}
-                  {editedContent.split('\n\n').map((paragraph, pIdx) => (
-                      <p key={pIdx} className="mb-2">
-                          {paragraph.split('\n').map((line, lIdx) => (
-                              <React.Fragment key={`${pIdx}-${lIdx}`}>
-                                  {line}
-                                  {lIdx < paragraph.split('\n').length - 1 && <br />}
-                              </React.Fragment>
-                          ))}
-                      </p>
-                  ))}
+                  {renderDisplayContent(editedContent)}
                 </div>
               )}
             </div>
@@ -256,9 +230,7 @@ const TailoredDocuments: React.FC = () => {
 
       {/* Hidden div for PDF generation */}
       {/* The content of this div will be dynamically set by handleDownloadPdf before calling downloadElementAsPdf */}
-      <div className="absolute -left-[9999px] top-0" id="printable-tailored-content" ref={printableDivRef}>
-        {/* Content will be inserted here dynamically by handleDownloadPdf */}
-      </div>
+      {/* Removed the fixed printableDivRef as downloadElementAsPdf now creates a temporary div dynamically */}
     </div>
   );
 };

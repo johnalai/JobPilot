@@ -11,6 +11,17 @@ interface CompanyInsightsDisplayProps {
   onInsightsFetched: (insights: CompanyInsights) => void; // Callback to update the parent Job state
 }
 
+// Helper to validate if a string is a constructible URL
+const isValidUrl = (urlString: string) => {
+  try {
+    // Check if it's a valid absolute URL with a scheme (http/https)
+    const url = new URL(urlString);
+    return url.protocol === 'http:' || url.protocol === 'https:';
+  } catch (e) {
+    return false;
+  }
+};
+
 const CompanyInsightsDisplay: React.FC<CompanyInsightsDisplayProps> = ({
   companyName,
   jobId,
@@ -86,7 +97,7 @@ const CompanyInsightsDisplay: React.FC<CompanyInsightsDisplayProps> = ({
           {localInsights.headquarters && (
             <p><span className="font-semibold">Headquarters:</span> {localInsights.headquarters}</p>
           )}
-          {localInsights.website && (
+          {localInsights.website && isValidUrl(localInsights.website) && (
             <p>
               <span className="font-semibold">Website:</span>{' '}
               <a href={localInsights.website} target="_blank" rel="noopener noreferrer" className="text-blue-600 hover:underline dark:text-blue-400">
@@ -97,7 +108,7 @@ const CompanyInsightsDisplay: React.FC<CompanyInsightsDisplayProps> = ({
           {localInsights.glassdoorRating && (
             <p>
               <span className="font-semibold">Glassdoor Rating:</span> {localInsights.glassdoorRating}{' '}
-              {localInsights.glassdoorUrl && (
+              {localInsights.glassdoorUrl && isValidUrl(localInsights.glassdoorUrl) && (
                 <a href={localInsights.glassdoorUrl} target="_blank" rel="noopener noreferrer" className="text-blue-600 hover:underline dark:text-blue-400">
                   (View on Glassdoor)
                 </a>

@@ -76,6 +76,9 @@ const normalizeResume = (resume: any): Resume => {
         address: typeof activeContent.contactInfo.address === 'string' ? activeContent.contactInfo.address : '',
         phone: typeof activeContent.contactInfo.phone === 'string' ? activeContent.contactInfo.phone : '',
         email: typeof activeContent.contactInfo.email === 'string' ? activeContent.contactInfo.email : '',
+        linkedin: typeof activeContent.contactInfo.linkedin === 'string' ? activeContent.contactInfo.linkedin : undefined, // New
+        github: typeof activeContent.contactInfo.github === 'string' ? activeContent.contactInfo.github : undefined,     // New
+        portfolio: typeof activeContent.contactInfo.portfolio === 'string' ? activeContent.contactInfo.portfolio : undefined, // New
       }
     : { name: '', address: '', phone: '', email: '' };
 
@@ -107,6 +110,9 @@ const normalizeResume = (resume: any): Resume => {
                 address: typeof vContent.contactInfo.address === 'string' ? vContent.contactInfo.address : '',
                 phone: typeof vContent.contactInfo.phone === 'string' ? vContent.contactInfo.phone : '',
                 email: typeof vContent.contactInfo.email === 'string' ? vContent.contactInfo.email : '',
+                linkedin: typeof vContent.contactInfo.linkedin === 'string' ? vContent.contactInfo.linkedin : undefined, // New
+                github: typeof vContent.contactInfo.github === 'string' ? vContent.contactInfo.github : undefined,     // New
+                portfolio: typeof vContent.contactInfo.portfolio === 'string' ? vContent.contactInfo.portfolio : undefined, // New
               }
             : { name: '', address: '', phone: '', email: '' };
 

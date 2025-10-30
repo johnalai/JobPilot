@@ -12,11 +12,10 @@
     "react": "^19.2.0",
     "react-dom": "^19.2.0",
     "@google/genai": "^1.26.0",
-    "jspdf": "^2.5.1",
-    "html2canvas": "^1.4.1",
     "docx": "^9.5.1",
     "intro.js": "7.2.0",
-    "mammoth": "1.11.0"
+    "mammoth": "1.11.0",
+    "pdfjs-dist": "^5.4.296"
   },
   "devDependencies": {
     "@types/node": "^22.14.0",

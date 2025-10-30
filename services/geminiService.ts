@@ -1,8 +1,74 @@
-import { GoogleGenAI, Type, GenerateContentResponse, Chat, Modality, FunctionDeclaration, Tool } from "@google/genai";
-// FIX: Import GroundingChunk type directly as it's used for type annotations.
-import { Job, Resume, ResumeContent, SkillGapAnalysis, Application, WebGroundingChunk, CompanyInsights, GroundingChunk } from '../types';
 
-// This interface is needed for findJobs, it's defined in JobFinder.tsx but better to have it here or in types.ts
+import { GoogleGenAI, GenerateContentResponse, Type } from "@google/genai";
+import { Application, CompanyInsights, Job, ResumeContent, SkillGapAnalysis, WebGroundingChunk } from '../types';
+
+// Initialize the Gemini API client
+// Always use `const ai = new GoogleGenAI({apiKey: process.env.API_KEY});`
+
+// FIX: Safely initialize GoogleGenAI. If API_KEY is missing, provide a mock object to prevent app crash,
+// but log a clear error to the console so the user knows why AI features won't work.
+let ai: GoogleGenAI;
+if (!process.env.API_KEY) {
+  console.error("CRITICAL ERROR: Google Gemini API Key (process.env.API_KEY) is missing. AI features will not function.");
+  // Provide a mock object for 'ai' to prevent crashes when attempting to call methods on it.
+  // Any calls to generateContent on this mock will throw a specific error.
+  ai = {
+    models: {
+      generateContent: async () => { throw new Error("Google Gemini API Key is missing. Please configure process.env.API_KEY."); },
+      generateContentStream: async function* () { throw new Error("Google Gemini API Key is missing. Please configure process.env.API_KEY."); },
+      generateImages: async () => { throw new Error("Google Gemini API Key is missing. Please configure process.env.API_KEY."); },
+      generateVideos: async () => { throw new Error("Google Gemini API Key is missing. Please configure process.env.API_KEY."); },
+    },
+    chats: {
+      create: () => ({
+        sendMessage: async () => { throw new Error("Google Gemini API Key is missing. Please configure process.env.API_KEY."); },
+        sendMessageStream: async function* () { throw new Error("Google Gemini API Key is missing. Please configure process.env.API_KEY."); },
+      }),
+    },
+    live: {
+      connect: async () => { throw new Error("Google Gemini API Key is missing. Please configure process.env.API_KEY."); },
+    },
+    operations: {
+      getVideosOperation: async () => { throw new Error("Google Gemini API Key is missing. Please configure process.env.API_KEY."); },
+    }
+  } as unknown as GoogleGenAI; // Type assertion to satisfy type checker
+} else {
+  ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
+}
+
+// Domains to avoid as primary job sources due to being aggregators or difficult to parse directly.
+// This list can be extended based on observed poor quality results.
+export const DOMAINS_TO_AVOID_AS_PRIMARY_SOURCE = [
+  'linkedin.com/jobs',
+  'indeed.com',
+  'ziprecruiter.com',
+  'glassdoor.com',
+  'monster.com',
+  'careerbuilder.com',
+  'simplyhired.com',
+  'dice.com',
+  'remotive.io', // ATS platform, not direct job board
+  'lever.co', // ATS platform, not direct job board
+  'workday.com', // ATS platform, not direct job board
+];
+
+// Helper to extract the domain from a URL
+export function getDomain(url: string): string {
+  try {
+    const hostname = new URL(url).hostname;
+    // Remove 'www.' prefix if present
+    return hostname.startsWith('www.') ? hostname.substring(4) : hostname;
+  } catch (e) {
+    return '';
+  }
+}
+
+// Interface for chat history, aligning with Gemini's content structure
+interface RoleAndParts {
+  role: 'user' | 'model';
+  parts: { text: string }[];
+}
+
 export interface FindJobsFilters {
   query: string;
   location: string;
@@ -12,799 +78,630 @@ export interface FindJobsFilters {
   skills: string;
 }
 
-// List of domains to avoid as primary sources (paywalls, generic search results, etc.)
-export const DOMAINS_TO_AVOID_AS_PRIMARY_SOURCE = [
-  'remoterocketship.com', // Example paywalled site
-  'ziprecruiter.com',     // Common paywalled site
-  'google.com/search',    // Generic Google search results
-  'aistudio.google.com',  // Placeholder/internal links
-  // Add other domains to avoid as needed
-];
-
-// Helper to extract domain from URL
-export const getDomain = (url: string) => {
-  try {
-      const hostname = new URL(url).hostname;
-      // Remove 'www.' prefix if present
-      return hostname.startsWith('www.') ? hostname.substring(4) : hostname;
-  } catch (e) {
-      return ''; // Invalid URL
-  }
-};
-
-// Helper to clean LLM JSON response from markdown fences
-const cleanJsonResponse = (jsonString: string): string => {
-  // Remove markdown code block fences if they exist
-  const cleaned = jsonString.replace(/```json\n?|\n?```/g, '').trim();
-  return cleaned;
-};
-
-// Helper to remove internal LLM instructions from generated text outputs
-const cleanLLMOutputInstructions = (text: string): string => {
-  let cleanedText = text;
-  // Remove explicit header markers and critical instructions
-  cleanedText = cleanedText.replace(/---START OF COVER LETTER HEADER---\n?/g, '');
-  cleanedText = cleanedText.replace(/\n?---END OF COVER LETTER HEADER---/g, '');
-  cleanedText = cleanedText.replace(/CRITICAL: The following complete header block must be used EXACTLY as provided, including all line breaks. Do NOT add or change anything in it.\n?/g, '');
-  cleanedText = cleanedText.replace(/CRITICAL: You MUST use the following complete header EXACTLY as provided, including all line breaks, at the very beginning of the cover letter. Do NOT add anything before it or modify its content.\n?/g, '');
-  cleanedText = cleanedText.replace(/Return ONLY the full cover letter text, starting with the header above, followed by the salutation and body. Do NOT include any additional comments, instructions, or introductory\/concluding remarks outside the letter itself.\n?/g, '');
-  // Clean up any remaining extra newlines at the start/end
-  return cleanedText.trim();
-};
-
-
-const ai = new GoogleGenAI({ apiKey: process.env.API_KEY! });
-
-// For parsing resume text into structured data
-export const parseResumeText = async (rawText: string): Promise<ResumeContent> => {
-  const response = await ai.models.generateContent({
-    model: 'gemini-2.5-flash',
-    contents: `Parse the following resume text and extract skills, work experience, education, and crucially, the candidate's full name, address, phone number, and email address.
-    Resume Text:
-    ---
-    ${rawText}
-    ---
-    `,
+/**
+ * Streams chat responses from the Gemini model.
+ * @param prompt The user's message.
+ * @param history The previous chat messages for context.
+ * @returns An async generator of GenerateContentResponse chunks.
+ */
+// FIX: Update the return type of the async function to be a Promise that resolves to an AsyncGenerator.
+export async function getChatStream(prompt: string, history: RoleAndParts[]): Promise<AsyncGenerator<GenerateContentResponse, any, unknown>> {
+  const chat = ai.chats.create({
+    model: 'gemini-2.5-flash', // Use gemini-2.5-flash for general chat tasks
     config: {
-      responseMimeType: "application/json",
-      responseSchema: {
-        type: Type.OBJECT,
-        properties: {
-          skills: {
-            type: Type.ARRAY,
-            items: { type: Type.STRING },
-            description: "A list of skills found in the resume."
-          },
-          experience: {
-            type: Type.ARRAY,
-            items: {
-              type: Type.OBJECT,
-              properties: {
-                title: { type: Type.STRING, description: "Job title" },
-                company: { type: Type.STRING, description: "Company name" },
-                description: { type: Type.STRING, description: "A summary of responsibilities and achievements." }
-              },
-              required: ['title', 'company', 'description']
-            },
-            description: "A list of work experiences."
-          },
-          education: {
-            type: Type.ARRAY,
-            items: {
-              type: Type.OBJECT,
-              properties: {
-                institution: { type: Type.STRING, description: "Name of the school or institution." },
-                degree: { type: Type.STRING, description: "Degree or certification obtained." }
-              },
-              required: ['institution', 'degree']
-            },
-            description: "A list of educational qualifications."
-          },
-          contactInfo: { // New: Add contactInfo to schema
-            type: Type.OBJECT,
-            properties: {
-              name: { type: Type.STRING, description: "Candidate's full name." },
-              address: { type: Type.STRING, description: "Candidate's full mailing address." },
-              phone: { type: Type.STRING, description: "Candidate's phone number." },
-              email: { type: Type.STRING, description: "Candidate's email address." },
-            },
-          }
-        },
-        required: ['skills', 'experience', 'education', 'contactInfo'] // FIX: Made contactInfo object itself required
-      }
-    }
+      systemInstruction: 'You are a helpful AI assistant for career advice, job searching, and application generation. Provide concise and relevant information. If asked about real-time events or specific company details, use your search capabilities.',
+    },
   });
+  const stream = await chat.sendMessageStream({ message: prompt });
+  return stream;
+}
 
-  const jsonResponse = JSON.parse(response.text);
-  return { ...jsonResponse, rawText };
-};
+/**
+ * Finds jobs based on filters and optionally a base resume, using Google Search grounding.
+ * The model's response will contain job summaries and grounding links.
+ * The output structure needs to be carefully parsed from the model's text response,
+ * as `responseSchema` is prohibited with `googleSearch`.
+ *
+ * This function will use a two-step approach:
+ * 1. Use Google Search to get relevant job information.
+ * 2. Parse the natural language response into structured Job objects using another model call.
+ *
+ * @param filters Job search filters.
+ * @param baseResumeContent Optional content of the user's default resume for tailoring.
+ * @returns An array of Job objects.
+ */
+export async function findJobs(filters: FindJobsFilters, baseResumeContent: ResumeContent | null): Promise<Job[]> {
+  const resumeContext = baseResumeContent ? `Here is my resume summary: ${baseResumeContent.rawText.substring(0, 1000)}` : '';
+  const filterDetails = Object.entries(filters)
+    .filter(([, value]) => value && value !== 'Any')
+    .map(([key, value]) => `${key}: ${value}`)
+    .join(', ');
 
-// For finding jobs using Google Search and optionally Maps grounding
-export const findJobs = async (filters: FindJobsFilters, resume: ResumeContent | null): Promise<Job[]> => {
-  let prompt = `Find relevant job postings based on the following criteria:\n`;
-  prompt += `- Keywords: ${filters.query}\n`;
-  if (filters.location) prompt += `- Location: ${filters.location}\n`;
-  if (filters.workModel !== 'Any') prompt += `- Work Model: ${filters.workModel}\n`;
-  if (filters.minSalary) prompt += `- Minimum Salary: $${filters.minSalary}\n`;
-  if (filters.experienceLevel !== 'Any') prompt += `- Experience Level: ${filters.experienceLevel}\n`;
-  if (filters.skills) prompt += `- Required Skills: ${filters.skills}\n`;
-  if (resume) {
-      prompt += `\nConsider the following resume profile for tailoring the search:\n`;
-      prompt += `- Key Skills: ${resume.skills.slice(0, 5).join(', ')}\n`;
-      if (resume.experience.length > 0) {
-        prompt += `- Most Recent Role: ${resume.experience[0].title} at ${resume.experience[0].company}\n`;
-      }
-  }
-  // FIX: Removed the "up to 10" limit from the prompt.
-  prompt += "\nReturn a comprehensive list of all relevant job postings. For each job, provide a title, company, location, and a comprehensive job description, capturing all available essential details. DO NOT provide a source URL in this response.";
-
-  const tools: Tool[] = [{ googleSearch: {} }];
-
-  let initialResponseText = '';
-  let globalGroundingChunks: GroundingChunk[] = [];
+  const fullPrompt = `Find relevant job postings based on these criteria: ${filterDetails}. 
+  ${resumeContext ? `Consider my resume content: ${resumeContext}.` : ''}
+  For each job, provide the Title, Company, Location, a brief Description, Work Model (if available), and Date Posted (if available).
+  Summarize at least 3-5 distinct job postings.
+  Format the output as a JSON array of Job objects. If a field is not found, use "Not Specified".
+  Respond ONLY with the JSON array, nothing else.
+  The JSON structure should strictly follow the Job interface:
+  [{
+    "id": "unique-job-id-1",
+    "title": "Job Title",
+    "company": "Company Name",
+    "location": "Job Location",
+    "description": "Brief description of the job.",
+    "workModel": "Remote/Hybrid/On-site/Not Specified",
+    "datePosted": "Date posted (e.g., 2024-07-20 or Not Available)",
+    "sourceUrl": "Optional URL if found in search",
+    "grounding": []
+  }]`;
 
   try {
-    const response = await ai.models.generateContent({
+    // Step 1: Use Google Search to find job information
+    const searchResponse = await ai.models.generateContent({
+      model: 'gemini-2.5-flash',
+      contents: fullPrompt,
+      config: {
+        tools: [{ googleSearch: {} }],
+        // Prohibited: responseMimeType and responseSchema with googleSearch
+      },
+    });
+
+    // Extract text from the response. The model is instructed to provide JSON in the text.
+    const textResponse = searchResponse.text;
+    if (!textResponse) {
+      console.warn("No text response from job search model.");
+      return [];
+    }
+
+    // Attempt to extract JSON from the text response
+    const jsonMatch = textResponse.match(/```json\n([\s\S]*?)\n```/);
+    let rawJobsJsonString = jsonMatch ? jsonMatch[1] : textResponse; // Try to extract from code block, fallback to full text
+
+    let parsedJobs: Job[] = [];
+    try {
+      parsedJobs = JSON.parse(rawJobsJsonString);
+    } catch (parseError) {
+      console.error("Failed to parse JSON directly from model's text response, attempting regex fallback:", parseError);
+      // Fallback: If JSON parsing fails, try to parse individual job-like structures from text
+      const jobRegex = /Title:\s*(.*?)\nCompany:\s*(.*?)\nLocation:\s*(.*?)\nDescription:\s*(.*?)(?=\nTitle:|\n\n|$)/gs;
+      let match;
+      const fallbackJobs: Job[] = [];
+      let idCounter = 0;
+      while ((match = jobRegex.exec(textResponse)) !== null) {
+          fallbackJobs.push({
+              id: `job-fallback-${Date.now()}-${idCounter++}`,
+              title: match[1].trim(),
+              company: match[2].trim(),
+              location: match[3].trim(),
+              description: match[4].trim(),
+          });
+      }
+      parsedJobs = fallbackJobs;
+    }
+
+    // Add grounding information if available
+    const groundingChunks = searchResponse.candidates?.[0]?.groundingMetadata?.groundingChunks;
+    const finalJobs: Job[] = parsedJobs.map(job => ({
+        ...job,
+        id: job.id || `job-${Date.now()}-${Math.random()}`, // Ensure ID exists
+        grounding: groundingChunks as WebGroundingChunk[] || [], // Type assertion based on expected output
+    }));
+
+    // Filter out undesirable domains from grounding sources
+    const filteredJobs = finalJobs.map(job => ({
+      ...job,
+      grounding: job.grounding?.filter(chunk => {
+        if ('web' in chunk && chunk.web?.uri) {
+          return !DOMAINS_TO_AVOID_AS_PRIMARY_SOURCE.some(domain => getDomain(chunk.web.uri!).includes(domain));
+        }
+        return false;
+      })
+    }));
+
+    return filteredJobs;
+
+  } catch (error) {
+    console.error('Error finding jobs with Google Search grounding:', error);
+    throw new Error('Failed to find jobs. Please check your query or try again later.');
+  }
+}
+
+/**
+ * Parses job details from a given URL using Google Search and model extraction.
+ * @param url The URL of the job posting.
+ * @returns A partial Job object with extracted details.
+ */
+export async function analyzeJobUrl(url: string): Promise<Partial<Job>> {
+  if (!url || !url.startsWith('http')) {
+    throw new Error("Invalid URL provided. Must start with http:// or https://");
+  }
+
+  const prompt = `Extract the following details from this job posting URL: "${url}".
+  Provide: Job Title, Company Name, Location, Full Description, Work Model (e.g., Remote, Hybrid, On-site), and Date Posted.
+  Format the output as a JSON object strictly following this schema:
+  {
+    "title": string,
+    "company": string,
+    "location": string,
+    "description": string,
+    "workModel"?: "Remote" | "Hybrid" | "On-site",
+    "datePosted"?: string,
+    "sourceUrl": string,
+    "grounding": [{ "web": { "uri": string, "title"?: string }}] // Include grounding chunks for source
+  }`;
+
+  try {
+    // Step 1: Use Google Search to access the URL content
+    const searchResponse = await ai.models.generateContent({
       model: 'gemini-2.5-flash',
       contents: prompt,
       config: {
-        tools: tools,
-        thinkingConfig: { thinkingBudget: 512 }, // Increased thinking budget to allow for more comprehensive results
+        tools: [{ googleSearch: {} }],
       },
     });
-    initialResponseText = response.text;
-    globalGroundingChunks = response.candidates?.[0]?.groundingMetadata?.groundingChunks as GroundingChunk[] || [];
-  } catch (e: any) {
-    console.error("Gemini API call (grounding) failed for findJobs:", e);
-    // FIX: Replaced direct `setError` call with throwing an error.
-    throw new Error(e.message || "Failed to search for jobs (initial AI call).");
+
+    const textResponse = searchResponse.text;
+    if (!textResponse) {
+      throw new Error("No text response from URL analysis model.");
+    }
+    
+    // Attempt to extract JSON from the text response (model is instructed to provide JSON)
+    const jsonMatch = textResponse.match(/```json\n([\s\S]*?)\n```/);
+    let rawJobJsonString = jsonMatch ? jsonMatch[1] : textResponse;
+
+    let parsedJob: Partial<Job>;
+    try {
+        parsedJob = JSON.parse(rawJobJsonString);
+    } catch (parseError) {
+        console.error("Failed to parse JSON directly from model's text response for URL, attempting markdown fallback:", parseError);
+        // Fallback parsing if JSON is not perfectly formatted but still contains key-value pairs
+        const titleMatch = textResponse.match(/Title:\s*(.*)/i);
+        const companyMatch = textResponse.match(/Company:\s*(.*)/i);
+        const locationMatch = textResponse.match(/Location:\s*(.*)/i);
+        const descriptionMatch = textResponse.match(/Description:\s*([\s\S]*?)(?=\n\w+:|\n\n|$)/i);
+        const workModelMatch = textResponse.match(/Work Model:\s*(.*)/i);
+        const datePostedMatch = textResponse.match(/Date Posted:\s*(.*)/i);
+
+        parsedJob = {
+            title: titleMatch ? titleMatch[1].trim() : undefined,
+            company: companyMatch ? companyMatch[1].trim() : undefined,
+            location: locationMatch ? locationMatch[1].trim() : undefined,
+            description: descriptionMatch ? descriptionMatch[1].trim() : undefined,
+            workModel: workModelMatch ? (workModelMatch[1].trim() as "Remote" | "Hybrid" | "On-site") : undefined,
+            datePosted: datePostedMatch ? datePostedMatch[1].trim() : undefined,
+        };
+    }
+
+    // Add grounding information
+    const groundingChunks = searchResponse.candidates?.[0]?.groundingMetadata?.groundingChunks as WebGroundingChunk[] || [];
+    const sourceUri = groundingChunks.find(chunk => 'web' in chunk && chunk.web?.uri === url)?.web?.uri || url;
+
+    return { ...parsedJob, sourceUrl: sourceUri, grounding: groundingChunks };
+
+  } catch (error) {
+    console.error('Error analyzing job URL:', error);
+    throw new Error('Failed to parse job details from URL. Ensure it is a valid job posting link.');
+  }
+}
+
+/**
+ * Parses job details from raw text description.
+ * @param text The raw job description text.
+ * @returns A partial Job object with extracted details.
+ */
+export async function analyzeJobText(text: string): Promise<Partial<Job>> {
+  if (!text || text.trim().length < 50) { // Require minimum text length for meaningful analysis
+    throw new Error("Job description text is too short or empty for analysis.");
   }
 
+  const prompt = `Extract the following details from this job description text:
+  "${text}"
+  Provide: Job Title, Company Name, Location, Full Description, Work Model (e.g., Remote, Hybrid, On-site), and Date Posted.
+  Format the output as a JSON object strictly following this schema:
+  {
+    "title": string,
+    "company": string,
+    "location": string,
+    "description": string,
+    "workModel"?: "Remote" | "Hybrid" | "On-site",
+    "datePosted"?: string
+  }`;
 
-  // Filter out undesirable domains from the global grounding chunks
-  const filteredGlobalGrounding = globalGroundingChunks.filter(chunk => {
-      if ('web' in chunk && chunk.web?.uri) {
-          return !DOMAINS_TO_AVOID_AS_PRIMARY_SOURCE.some(domain => getDomain(chunk.web.uri).includes(domain));
-      }
-      return false; // Only keep valid web chunks
-  });
-
-  let extractionResponseText = '';
   try {
-    // Since the response is grounded text and not guaranteed JSON, we'll parse it with another LLM call.
-    // This is a common pattern for extracting structured data from unstructured grounded responses.
-    const extractionResponse = await ai.models.generateContent({
-      model: 'gemini-2.5-flash',
-      contents: `Extract the job postings from the following text into a clean JSON array. Each object should have 'title', 'company', 'location', 'description', 'workModel', 'datePosted'. If a field is not present, omit it. The 'description' should be as **comprehensive and detailed as possible, capturing ALL essential information.**
-      CRITICAL: Do NOT summarize the description; provide it in its entirety from the source.
-      
-      Text:
-      ---
-      ${initialResponseText}
-      ---
-      `,
-      config: {
-        responseMimeType: "application/json",
-        responseSchema: {
-          type: Type.ARRAY,
-          items: {
-            type: Type.OBJECT,
-            properties: {
-              title: { type: Type.STRING },
-              company: { type: Type.STRING },
-              location: { type: Type.STRING },
-              description: { type: Type.STRING },
-              workModel: { type: Type.STRING },
-              datePosted: { type: Type.STRING },
-            },
-            required: ['title', 'company', 'location', 'description']
-          }
-        },
-        thinkingConfig: { thinkingBudget: 256 }, // FIX: Added thinking budget for JSON extraction
-      }
-    });
-    extractionResponseText = extractionResponse.text;
-  } catch (e: any) {
-    console.error("Gemini API call (JSON extraction) failed for findJobs. Raw response:", initialResponseText, "Error:", e);
-    // FIX: Replaced direct `setError` call with throwing an error.
-    throw new Error(e.message || "Failed to process job search results (AI parsing).");
-  }
-
-  let extractedJobs: any[] = [];
-  try {
-    extractedJobs = JSON.parse(cleanJsonResponse(extractionResponseText));
-  } catch (e: any) {
-    console.error("Failed to parse JSON response for findJobs. Raw JSON output:", extractionResponseText, "Error:", e);
-    // FIX: Replaced direct `setError` call with throwing an error.
-    throw new Error("Failed to interpret job search results. AI returned invalid data.");
-  }
-
-
-  const jobs: Job[] = extractedJobs.map((job: any, index: number) => {
-    const jobTitleLower = (job.title || '').toLowerCase();
-    const companyNameLower = (job.company || '').toLowerCase();
-    const jobKeywords = jobTitleLower.split(/\s+/).filter(Boolean); // Tokenize job title
-    const companyKeywords = companyNameLower.split(/\s+/).filter(Boolean); // Tokenize company name
-
-    // Heuristic: filter grounding chunks to be specific to this job
-    let jobSpecificGrounding = filteredGlobalGrounding.filter(chunk => {
-        if ('web' in chunk && chunk.web?.uri) {
-            const uriLower = chunk.web.uri.toLowerCase();
-            const titleLower = (chunk.web.title || '').toLowerCase();
-            
-            // Check for multiple keyword matches in URI or title
-            const hasJobTitleKeywords = jobKeywords.some(keyword => uriLower.includes(keyword) || titleLower.includes(keyword));
-            const hasCompanyKeywords = companyKeywords.some(keyword => uriLower.includes(keyword) || titleLower.includes(keyword));
-
-            // Also prioritize if the domain of the chunk matches the company name (e.g., "google.com" for Google)
-            const domainMatchesCompany = companyNameLower && getDomain(chunk.web.uri).includes(companyNameLower.replace(/\s/g, '').split(' ')[0]);
-
-            return (hasJobTitleKeywords && hasCompanyKeywords) || domainMatchesCompany;
-        }
-        return false; 
-    });
-
-    // Deduplicate job-specific grounding links by URI
-    const uniqueJobGrounding = Array.from(new Map(jobSpecificGrounding.map(chunk => {
-        if ('web' in chunk && chunk.web?.uri) {
-            return [chunk.web.uri, chunk];
-        }
-        return [null, null]; // Should not happen with current filter
-    })).values()).filter(Boolean) as GroundingChunk[];
-
-    // Determine the best sourceUrl from the unique job-specific grounding
-    let finalSourceUrl: string | undefined;
-
-    if (uniqueJobGrounding.length > 0) {
-        // Prioritize:
-        // 1. URLs containing common job posting paths/keywords
-        // 2. URLs that are company career pages (e.g., 'careers.company.com')
-        // 3. URLs with more keyword matches
-        uniqueJobGrounding.sort((a, b) => {
-            const uriA = ('web' in a && a.web?.uri) ? a.web.uri.toLowerCase() : '';
-            const titleA = ('web' in a && a.web?.title) ? a.web.title.toLowerCase() : '';
-            const uriB = ('web' in b && b.web?.uri) ? b.web.uri.toLowerCase() : '';
-            const titleB = ('web' in b && b.web?.title) ? b.web.title.toLowerCase() : '';
-
-            let scoreA = 0;
-            let scoreB = 0;
-
-            // Boost for job-specific path segments
-            if (uriA.includes('/job/') || uriA.includes('/careers/') || uriA.includes('/posting/') || uriA.includes('/apply')) scoreA += 10;
-            if (uriB.includes('/job/') || uriB.includes('/careers/') || uriB.includes('/posting/') || uriB.includes('/apply')) scoreB += 10;
-
-            // Boost for company career subdomain
-            if (getDomain(uriA).startsWith('careers.') || getDomain(uriA).startsWith('jobs.')) scoreA += 5;
-            if (getDomain(uriB).startsWith('careers.') || getDomain(uriB).startsWith('jobs.')) scoreB += 5;
-
-            // Score based on keyword matches in URI and title
-            const calculateKeywordScore = (text: string, keywords: string[]) => keywords.reduce((sum, keyword) => sum + (text.includes(keyword) ? 1 : 0), 0);
-            scoreA += calculateKeywordScore(uriA + titleA, [...jobKeywords, ...companyKeywords]);
-            scoreB += calculateKeywordScore(uriB + titleB, [...jobKeywords, ...companyKeywords]);
-            
-            return scoreB - scoreA; // Descending score
-        });
-        
-        if ('web' in uniqueJobGrounding[0] && uniqueJobGrounding[0].web?.uri) {
-            finalSourceUrl = uniqueJobGrounding[0].web.uri;
-        }
-    }
-
-    // Fallback: If no job-specific grounding yields a sourceUrl, try to find a relevant one from global filtered grounding
-    // This is to ensure a link is almost always present if any non-paywalled source was identified by Gemini.
-    if (!finalSourceUrl && filteredGlobalGrounding.length > 0) {
-        let fallbackCandidate: GroundingChunk | undefined;
-        // Try to find a global grounding chunk that at least contains the company name
-        fallbackCandidate = filteredGlobalGrounding.find(chunk => {
-            if ('web' in chunk && chunk.web?.uri) {
-                const uriLower = chunk.web.uri.toLowerCase();
-                const titleLower = (chunk.web.title || '').toLowerCase();
-                return companyKeywords.some(keyword => uriLower.includes(keyword) || titleLower.includes(keyword));
-            }
-            return false;
-        });
-        // If still no candidate, just take the first global filtered one
-        if (!fallbackCandidate && filteredGlobalGrounding.length > 0) {
-            fallbackCandidate = filteredGlobalGrounding[0];
-        }
-        if (fallbackCandidate && 'web' in fallbackCandidate && fallbackCandidate.web?.uri) {
-            finalSourceUrl = fallbackCandidate.web.uri;
-        }
-    }
-
-
-    return {
-        ...job,
-        id: `job-${Date.now()}-${index}`, // Ensure unique ID for each job
-        sourceUrl: finalSourceUrl, // Assign the refined source URL
-        grounding: uniqueJobGrounding, // Assign the filtered and unique, job-specific grounding
-    };
-  });
-
-  return jobs;
-};
-
-// For fetching company insights
-export const getCompanyInsights = async (companyName: string): Promise<CompanyInsights | null> => {
-    if (!companyName.trim()) {
-        throw new Error("Company name cannot be empty for insights search.");
-    }
-    
-    // Initialize GoogleGenAI instance *before* making the API call
-    const aiWithKey = new GoogleGenAI({ apiKey: process.env.API_KEY! });
-
-    const prompt = `Find company insights for "${companyName}". Extract the following information into a structured JSON object.
-    CRITICAL: The output MUST be a JSON object, wrapped in markdown code block fences (E.g., \`\`\`json\\n{...}\\n\`\`\`).
-    - Company Name (as provided)
-    - Industry (e.g., "Software Development", "Financial Services")
-    - Company Size (e.g., "1,001-5,000 employees")
-    - Headquarters location (City, State, Country)
-    - Glassdoor Rating (a single number, e.g., 4.2)
-    - Glassdoor URL (link to the company's Glassdoor profile)
-    - Recent News (a list of 2-3 concise headlines or summaries from recent articles, if available)
-    - Official Website URL
-
-    If information is not available, omit the field.
-    `;
-
-    let responseText = '';
-    try {
-      const response = await aiWithKey.models.generateContent({
-        model: 'gemini-2.5-flash',
-        contents: prompt,
-        config: {
-          tools: [{ googleSearch: {} }],
-          // responseMimeType: "application/json", // Removed as per guidelines for googleSearch tool
-          // responseSchema: { // Removed as per guidelines for googleSearch tool
-          //   type: Type.OBJECT,
-          //   properties: {
-          //     companyName: { type: Type.STRING, description: "The name of the company." },
-          //     industry: { type: Type.STRING, description: "The industry the company operates in." },
-          //     size: { type: Type.STRING, description: "The number of employees in the company." },
-          //     headquarters: { type: Type.STRING, description: "The main headquarters location of the company." },
-          //     glassdoorRating: { type: Type.NUMBER, description: "The average Glassdoor rating of the company." },
-          //     glassdoorUrl: { type: Type.STRING, description: "The URL to the company's Glassdoor profile." },
-          //     recentNews: {
-          //       type: Type.ARRAY,
-          //       items: { type: Type.STRING },
-          //       description: "2-3 recent news headlines or summaries about the company."
-          //     },
-          //     website: { type: Type.STRING, description: "The official website URL of the company." },
-          //   },
-          //   required: ['companyName'] // Only companyName is strictly required, others are optional
-          // },
-          thinkingConfig: { thinkingBudget: 256 }, // Added thinking budget for JSON extraction
-        },
-      });
-      responseText = response.text;
-    } catch (e: any) {
-      console.error("Gemini API call (company insights) failed for company:", companyName, "Error:", e);
-      throw new Error(e.message || "Failed to fetch company insights (AI service error).");
-    }
-
-    try {
-      const insights = JSON.parse(cleanJsonResponse(responseText));
-      return insights;
-    } catch (e: any) {
-      console.error("Failed to parse JSON response for company insights. Raw JSON output:", responseText, "Error:", e);
-      throw new Error("Failed to interpret company insights. AI returned invalid data. Raw response: " + responseText);
-    }
-};
-
-// For the chatbot
-export const getChatStream = async (message: string, history: { role: 'user' | 'model', parts: { text: string }[] }[]) => {
-    // FIX: Initialize GoogleGenAI inside the function to pick up latest API_KEY
-    const aiChat = new GoogleGenAI({ apiKey: process.env.API_KEY! });
-    const chat: Chat = aiChat.chats.create({
-        model: 'gemini-2.5-flash',
-        config: {
-            systemInstruction: "You are JobBot, an expert career assistant. Help users with their job search, resume building, and interview preparation. Keep your answers concise and helpful."
-        },
-        history: history
-    });
-    return chat.sendMessageStream({ message });
-};
-
-// For analyzing a job from a URL
-export const analyzeJobUrl = async (url: string): Promise<Partial<Job>> => {
-    const prompt = `I will provide a URL to a job posting. Please act as if you have visited the URL and extract the key details from the job posting.
-    URL: ${url}
-    
-    Extract the following information:
-    - Job Title
-    - Company Name
-    - Location
-    - A **full, comprehensive, and essential job description, capturing ALL available and essential details without any summarization or truncation**
-    - Work Model (e.g., Remote, Hybrid, On-site)
-    `;
-
-    let initialResponseText = '';
-    let globalGroundingChunks: GroundingChunk[] = [];
-
-    try {
-      const response = await ai.models.generateContent({
-        model: 'gemini-2.5-flash',
-        contents: prompt,
-        config: {
-          tools: [{ googleSearch: {} }],
-        },
-      });
-      initialResponseText = response.text;
-      globalGroundingChunks = response.candidates?.[0]?.groundingMetadata?.groundingChunks as GroundingChunk[] || [];
-    } catch (e: any) {
-      console.error("Gemini API call (grounding) failed for analyzeJobUrl:", e);
-      throw new Error(e.message || "Failed to analyze job URL (initial AI call).");
-    }
-
-
-    let extractionResponseText = '';
-    try {
-      const extractionResponse = await ai.models.generateContent({
-          model: 'gemini-2.5-flash',
-          contents: `From the following text, extract the job details into a JSON object. The 'description' should be as **comprehensive and detailed as possible, capturing ALL essential information.**
-          CRITICAL: Do NOT summarize the description; provide it in its entirety from the source.
-          Text:
-          ---
-          ${initialResponseText}
-          ---`,
-          config: {
-              responseMimeType: "application/json",
-              responseSchema: {
-                  type: Type.OBJECT,
-                  properties: {
-                      title: { type: Type.STRING },
-                      company: { type: Type.STRING },
-                      location: { type: Type.STRING },
-                      description: { type: Type.STRING },
-                      workModel: { type: Type.STRING },
-                  },
-                  required: ['title', 'company', 'location', 'description']
-              },
-              thinkingConfig: { thinkingBudget: 256 }, // FIX: Added thinking budget for JSON extraction
-          }
-      });
-      extractionResponseText = extractionResponse.text;
-    } catch (e: any) {
-      console.error("Gemini API call (JSON extraction) failed for analyzeJobUrl. Raw response:", initialResponseText, "Error:", e);
-      throw new Error(e.message || "Failed to process job URL (AI parsing).");
-    }
-    
-    let extractedData: Partial<Job> = {};
-    try {
-      extractedData = JSON.parse(cleanJsonResponse(extractionResponseText));
-    } catch (e: any) {
-      console.error("Failed to parse JSON response for analyzeJobUrl. Raw JSON output:", extractionResponseText, "Error:", e);
-      throw new Error("Failed to interpret job URL. AI returned invalid data.");
-    }
-
-    // Filter out undesirable domains from the global grounding chunks
-    const filteredGrounding = globalGroundingChunks.filter(chunk => {
-        if ('web' in chunk && chunk.web?.uri) {
-            // FIX: Use chunk.web.uri directly here as `uri` is not in scope.
-            return !DOMAINS_TO_AVOID_AS_PRIMARY_SOURCE.some(domain => getDomain(chunk.web.uri).includes(domain));
-        }
-        return false; // Only keep valid web chunks
-    });
-
-    // Deduplicate grounding links by URI
-    const uniqueGrounding = Array.from(new Map(filteredGrounding.map(chunk => {
-        if ('web' in chunk && chunk.web?.uri) {
-            return [chunk.web.uri, chunk];
-        }
-        return [null, null];
-    })).values()).filter(Boolean) as GroundingChunk[];
-
-    let finalSourceUrl: string | undefined;
-
-    // 1. Prioritize the original input URL if it's valid and not in the "to avoid" list
-    if (url && getDomain(url) !== '' && !DOMAINS_TO_AVOID_AS_PRIMARY_SOURCE.some(domain => getDomain(url).includes(domain))) {
-        finalSourceUrl = url;
-    } else {
-        // 2. If original URL is not suitable, try to find a better one from grounding
-        if (uniqueGrounding.length > 0) {
-            const jobTitleLower = (extractedData.title || '').toLowerCase();
-            const companyNameLower = (extractedData.company || '').toLowerCase();
-            const jobKeywords = jobTitleLower.split(/\s+/).filter(Boolean);
-            const companyKeywords = companyNameLower.split(/\s+/).filter(Boolean);
-
-            uniqueGrounding.sort((a, b) => {
-                const uriA = ('web' in a && a.web?.uri) ? a.web.uri.toLowerCase() : '';
-                const titleA = ('web' in a && a.web?.title) ? a.web.title.toLowerCase() : '';
-                const uriB = ('web' in b && b.web?.uri) ? b.web.uri.toLowerCase() : '';
-                const titleB = ('web' in b && b.web?.title) ? b.web.title.toLowerCase() : '';
-
-                let scoreA = 0;
-                let scoreB = 0;
-
-                // Boost for job-specific path segments
-                if (uriA.includes('/job/') || uriA.includes('/careers/') || uriA.includes('/posting/') || uriA.includes('/apply')) scoreA += 10;
-                if (uriB.includes('/job/') || uriB.includes('/careers/') || uriB.includes('/posting/') || uriB.includes('/apply')) scoreB += 10;
-
-                // Boost for company career subdomain
-                if (getDomain(uriA).startsWith('careers.') || getDomain(uriA).startsWith('jobs.')) scoreA += 5;
-                if (getDomain(uriB).startsWith('careers.') || getDomain(uriB).startsWith('jobs.')) scoreB += 5;
-
-                // Score based on keyword matches in URI and title
-                const calculateKeywordScore = (text: string, keywords: string[]) => keywords.reduce((sum, keyword) => sum + (text.includes(keyword) ? 1 : 0), 0);
-                scoreA += calculateKeywordScore(uriA + titleA, [...jobKeywords, ...companyKeywords]);
-                scoreB += calculateKeywordScore(uriB + titleB, [...jobKeywords, ...companyKeywords]);
-
-                return scoreB - scoreA; // Descending score
-            });
-
-            if ('web' in uniqueGrounding[0] && uniqueGrounding[0].web?.uri) {
-                finalSourceUrl = uniqueGrounding[0].web.uri;
-            }
-        }
-    }
-
-    return { ...extractedData, sourceUrl: finalSourceUrl, grounding: uniqueGrounding };
-};
-
-// For analyzing job from raw text
-export const analyzeJobText = async (text: string): Promise<Partial<Job>> => {
-    let responseText = '';
-    try {
-      const response = await ai.models.generateContent({
-          model: 'gemini-2.5-flash',
-          contents: `From the following job description text, extract the key details into a JSON object. The 'description' should be as **comprehensive and detailed as possible, capturing ALL essential information.**
-          CRITICAL: Do NOT summarize the description; provide it in its entirety from the source.
-          Text:
-          ---
-          ${text}
-          ---`,
-          config: {
-              responseMimeType: "application/json",
-              responseSchema: {
-                  type: Type.OBJECT,
-                  properties: {
-                      title: { type: Type.STRING },
-                      company: { type: Type.STRING },
-                      location: { type: Type.STRING },
-                      description: { type: Type.STRING },
-                      workModel: { type: Type.STRING },
-                  },
-                  required: ['title', 'company', 'location', 'description']
-              },
-              thinkingConfig: { thinkingBudget: 256 }, // FIX: Added thinking budget for JSON extraction
-          }
-      });
-      responseText = response.text;
-    } catch (e: any) {
-      console.error("Gemini API call (JSON extraction) failed for analyzeJobText. Raw response:", text, "Error:", e);
-      throw new Error(e.message || "Failed to process job text (AI parsing).");
-    }
-
-    try {
-      // No grounding chunks or sourceUrl extraction from text input directly
-      return JSON.parse(cleanJsonResponse(responseText));
-    } catch (e: any) {
-      console.error("Failed to parse JSON response for analyzeJobText. Raw JSON output:", responseText, "Error:", e);
-      throw new Error("Failed to interpret job text. AI returned invalid data.");
-    }
-};
-
-
-// For generating a tailored resume
-export const generateResumeForJob = async (job: Job, resumeContent: ResumeContent, customHeader?: string): Promise<string> => {
-    let basePrompt = `
-    Job Description:
-    ---
-    Title: ${job.title} at ${job.company}
-    Description: ${job.description}
-    ---
-
-    Base Resume:
-    ---
-    ${resumeContent.rawText}
-    ---
-
-    Based on the job description, rewrite the 'Base Resume' to highlight the most relevant skills and experiences.
-    Focus on tailoring the summary and experience bullet points to match the job requirements.
-    Return only the full, updated resume text. Do not add any introductory phrases.
-    `;
-    
-    let finalPrompt = '';
-    if (customHeader && customHeader.trim()) {
-      finalPrompt = `CRITICAL: Use the following header EXACTLY as provided at the very top of the resume. Do not add or change anything in the header.
----CUSTOM HEADER START---
-${customHeader.trim()}
----CUSTOM HEADER END---
-
-` + basePrompt;
-    } else {
-      finalPrompt = `First, generate a professional header for a resume containing a name and contact information (e.g. Name, City, Phone, Email). Then, using that exact header, rewrite the resume based on the job description provided below.
-CRITICAL: When generating the header, ensure it is professional and includes the candidate's name and full contact information (address, phone, email) if available in the base resume content.
-CRITICAL: Once generated, use this header EXACTLY as the first part of the resume.
-` + basePrompt;
-    }
-    
-    const response = await ai.models.generateContent({ model: 'gemini-2.5-flash', contents: finalPrompt });
-    return response.text;
-};
-
-// For generating a tailored cover letter
-export const generateCoverLetterForJob = async (job: Job, resumeContent: ResumeContent, userTone: string, customHeader?: string): Promise<string> => {
-    let candidateInfoBlock = '';
-    const today = new Date().toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' });
-
-    if (customHeader && customHeader.trim()) {
-        candidateInfoBlock = customHeader.trim();
-    } else if (resumeContent.contactInfo) {
-        const { name, address, phone, email } = resumeContent.contactInfo;
-        const candidateName = name || '[Your Name]';
-        const candidateAddress = address || '[Your Address]';
-        const contactLine = [phone, email].filter(Boolean).join(' | ');
-
-        // Ensure each part is on its own line and use placeholders if empty
-        candidateInfoBlock = [
-            candidateName,
-            candidateAddress,
-            contactLine,
-        ].filter(Boolean).join('\n'); // Filter out empty lines
-    } else {
-        candidateInfoBlock = `[Your Name]\n[Your Address]\n[Your Phone] | [Your Email]`;
-    }
-
-    // Combine into a single, well-structured header string for the LLM
-    // This ensures two newlines after contact, and the date followed by two newlines
-    // FIX: Added explicit empty lines to ensure consistent spacing even if parts are missing, and strong critical instruction.
-    const formattedHeaderForLLM = `CRITICAL: The following complete header block must be used EXACTLY as provided, including all line breaks. Do NOT add or change anything in it.
-${candidateInfoBlock}
-
-${today}
-
-`; 
-
-    let basePrompt = `
-    Job Description:
-    ---
-    Title: ${job.title} at ${job.company}
-    Description: ${job.description}
-    ---
-
-    Candidate's Resume:
-    ---
-    ${resumeContent.rawText}
-    ---
-    
-    User-specified tone: ${userTone}
-
-    Write a professional and compelling cover letter for the specified job, drawing from the candidate's resume.
-    The tone should be ${userTone}. The letter should be concise (around 3-4 paragraphs) and tailored to the job description.
-    Address why the candidate is a good fit for this specific role and company.
-    Begin the letter with "Dear Hiring Manager," or the appropriate recipient if implied by the job description, followed by the body.
-    `;
-    
-    // Explicitly instruct the LLM to use the header exactly and return only the letter.
-    const finalPrompt = `CRITICAL: You MUST use the following complete header EXACTLY as provided, including all line breaks, at the very beginning of the cover letter. Do NOT add anything before it or modify its content.
----START OF COVER LETTER HEADER---
-${formattedHeaderForLLM}---END OF COVER LETTER HEADER---
-
-${basePrompt.trim()}
-Return ONLY the full cover letter text, starting with the header above, followed by the salutation and body. Do NOT include any additional comments, instructions, or introductory\/concluding remarks outside the letter itself.
-`;
-
-    const response = await ai.models.generateContent({ model: 'gemini-2.5-flash', contents: finalPrompt });
-    return cleanLLMOutputInstructions(response.text); // Apply cleanup
-};
-
-export const analyzeATSCompliance = async (job: Job, generatedResume: string): Promise<Application['atsScore']> => {
-  // FIX: Initialize GoogleGenAI inside the function to pick up latest API_KEY
-  const aiPro = new GoogleGenAI({ apiKey: process.env.API_KEY! }); 
-  const prompt = `Act as an advanced Applicant Tracking System (ATS). Analyze the provided tailored resume against the job description.
-  Provide a score from 0 to 100 representing the match quality.
-  Also provide concise feedback on why the score was given, focusing on keyword alignment and relevance of experience.
-  Additionally, identify any specific keywords or phrases from the job description that are missing in the resume.
-  Suggest concrete ways to integrate these missing keywords into the resume.
-  Finally, assess the appropriate use of industry-specific jargon in the resume and provide feedback if it's lacking or overused.
-
-  Job Description:
-  ---
-  ${job.description}
-  ---
-
-  Tailored Resume:
-  ---
-  ${generatedResume}
-  ---
-  `;
-  let responseText = '';
-  try {
-    const response = await aiPro.models.generateContent({
-      model: 'gemini-2.5-pro', // Using Pro for complex analysis
+    const response = await ai.models.generateContent({
+      model: 'gemini-2.5-pro', // Use Pro for better text understanding and extraction
       contents: prompt,
       config: {
         responseMimeType: 'application/json',
         responseSchema: {
           type: Type.OBJECT,
           properties: {
-            score: { type: Type.NUMBER, description: "ATS match score from 0 to 100" },
-            feedback: { type: Type.STRING, description: "Brief feedback on the score." },
-            missingKeywords: { 
-              type: Type.ARRAY, 
-              items: { type: Type.STRING }, 
-              description: "Specific keywords or phrases from the job description missing in the resume." 
+            title: { type: Type.STRING },
+            company: { type: Type.STRING },
+            location: { type: Type.STRING },
+            description: { type: Type.STRING },
+            workModel: {
+              type: Type.STRING,
+              enum: ['Remote', 'Hybrid', 'On-site'],
+              nullable: true
             },
-            integrationSuggestions: { 
-              type: Type.ARRAY, 
-              items: { type: Type.STRING }, 
-              description: "Suggestions on how to integrate missing keywords into the resume." 
-            },
-            jargonCheck: { 
-              type: Type.STRING, 
-              description: "Assessment of appropriate industry-specific jargon usage in the resume." 
-            },
+            datePosted: { type: Type.STRING, nullable: true },
           },
-          required: ['score', 'feedback'] // Only score and feedback are strictly required initially
+          required: ['title', 'company', 'location', 'description'],
         },
-        thinkingConfig: { thinkingBudget: 32768 }, // Max thinking budget for 2.5 Pro
-      }
+      },
     });
-    responseText = response.text;
-  } catch (e: any) {
-    console.error("Gemini API call (ATS analysis) failed. Raw response:", prompt, "Error:", e);
-    throw new Error(e.message || "Failed to perform ATS analysis.");
-  }
 
-  try {
-    return JSON.parse(cleanJsonResponse(responseText));
-  } catch (e: any) {
-    console.error("Failed to parse JSON response for ATS analysis. Raw JSON output:", responseText, "Error:", e);
-    throw new Error("Failed to interpret ATS analysis results. AI returned invalid data.");
+    const jsonStr = response.text.trim();
+    return JSON.parse(jsonStr) as Partial<Job>;
+  } catch (error) {
+    console.error('Error analyzing job text:', error);
+    throw new Error('Failed to parse job details from text. Ensure the text is a valid job description.');
   }
 }
 
+/**
+ * Analyzes skill gaps between a job description and a resume.
+ * @param job The job to analyze against.
+ * @param resume The user's resume content.
+ * @returns A SkillGapAnalysis object.
+ */
+export async function analyzeSkillGap(job: Job, resume: ResumeContent): Promise<SkillGapAnalysis> {
+  const prompt = `Compare the following job description with the provided resume to identify matching skills, missing skills, and suggestions for how to acquire or highlight missing skills.
+  Job Description:
+  ${job.description}
 
-// For skill gap analysis
-export const analyzeSkillGap = async (job: Job, resumeContent: ResumeContent): Promise<SkillGapAnalysis> => {
-  // FIX: Initialize GoogleGenAI inside the function to pick up latest API_KEY
-  const aiPro = new GoogleGenAI({ apiKey: process.env.API_KEY! }); 
-  const prompt = `
-    Job Description Keywords & Requirements:
-    ---
-    ${job.description}
-    ---
+  Resume:
+  ${resume.rawText}
 
-    Candidate's Skills from Resume:
-    ---
-    ${resumeContent.skills.join(', ')}
-    ---
+  Provide the analysis in a JSON object strictly following this schema:
+  {
+    "matchingSkills": string[],
+    "missingSkills": string[],
+    "suggestions": string[]
+  }`;
 
-    Analyze the candidate's skills against the job description. Identify:
-    1.  'matchingSkills': Skills the candidate has that are relevant to the job.
-    2.  'missingSkills': Important skills required by the job that are not listed in the candidate's skills.
-    3.  'suggestions': Actionable suggestions for how the candidate can bridge the gap for the missing skills (e.g., 'Highlight project X which used technology Y', 'Consider a short online course in Z').
-  `;
-  let responseText = '';
   try {
-    const response = await aiPro.models.generateContent({
-      model: 'gemini-2.5-pro', // Using Pro for complex analysis
+    const response = await ai.models.generateContent({
+      model: 'gemini-2.5-flash', // Flash is generally good for structured extraction
       contents: prompt,
       config: {
-        responseMimeType: "application/json",
+        responseMimeType: 'application/json',
         responseSchema: {
           type: Type.OBJECT,
           properties: {
             matchingSkills: { type: Type.ARRAY, items: { type: Type.STRING } },
             missingSkills: { type: Type.ARRAY, items: { type: Type.STRING } },
-            suggestions: { type: Type.ARRAY, items: { type: Type.STRING } }
+            suggestions: { type: Type.ARRAY, items: { type: Type.STRING } },
           },
-          required: ['matchingSkills', 'missingSkills', 'suggestions']
+          required: ['matchingSkills', 'missingSkills', 'suggestions'],
         },
-        thinkingConfig: { thinkingBudget: 32768 }, // Max thinking budget for 2.5 Pro
-      }
+      },
     });
-    responseText = response.text;
-  } catch (e: any) {
-    console.error("Gemini API call (skill gap analysis) failed. Raw response:", prompt, "Error:", e);
-    throw new Error(e.message || "Failed to perform skill gap analysis.");
+
+    const jsonStr = response.text.trim();
+    return JSON.parse(jsonStr) as SkillGapAnalysis;
+  } catch (error) {
+    console.error('Error analyzing skill gap:', error);
+    throw new Error('Failed to perform skill gap analysis. Please try again.');
+  }
+}
+
+/**
+ * Analyzes the ATS compliance of a resume against a job description.
+ * @param job The job to analyze against.
+ * @param resumeText The generated/tailored resume text.
+ * @returns An ATS score and feedback object.
+ */
+export async function analyzeATSCompliance(job: Job, resumeText: string): Promise<Application['atsScore']> {
+  if (!resumeText) {
+    throw new Error("Resume content is empty. Cannot perform ATS analysis.");
   }
 
+  const prompt = `Given the following job description and a resume, evaluate the resume's Applicant Tracking System (ATS) compliance.
+  Provide a score from 0-100, overall feedback, a list of keywords from the job description that are missing from the resume,
+  suggestions on how to integrate those missing keywords, and an assessment of jargon usage.
+  
+  Job Description:
+  ${job.description}
+
+  Resume to evaluate:
+  ${resumeText}
+
+  Provide the analysis in a JSON object strictly following this schema:
+  {
+    "score": number,
+    "feedback": string,
+    "missingKeywords": string[],
+    "integrationSuggestions": string[],
+    "jargonCheck": string
+  }`;
+
   try {
-    return JSON.parse(cleanJsonResponse(responseText));
-  } catch (e: any) {
-    console.error("Failed to parse JSON response for skill gap analysis. Raw JSON output:", responseText, "Error:", e);
-    throw new Error("Failed to interpret skill gap analysis results. AI returned invalid data.");
+    const response = await ai.models.generateContent({
+      model: 'gemini-2.5-flash',
+      contents: prompt,
+      config: {
+        responseMimeType: 'application/json',
+        responseSchema: {
+          type: Type.OBJECT,
+          properties: {
+            score: { type: Type.NUMBER, description: 'ATS match score out of 100.' },
+            feedback: { type: Type.STRING, description: 'Overall feedback on ATS compliance.' },
+            missingKeywords: { type: Type.ARRAY, items: { type: Type.STRING }, description: 'Keywords from job description missing in resume.' },
+            integrationSuggestions: { type: Type.ARRAY, items: { type: Type.STRING }, description: 'Suggestions to integrate missing keywords.' },
+            jargonCheck: { type: Type.STRING, description: 'Assessment of industry jargon usage.' },
+          },
+          required: ['score', 'feedback', 'missingKeywords', 'integrationSuggestions', 'jargonCheck'],
+        },
+      },
+    });
+
+    const jsonStr = response.text.trim();
+    return JSON.parse(jsonStr) as Application['atsScore'];
+  } catch (error) {
+    console.error('Error analyzing ATS compliance:', error);
+    throw new Error('Failed to perform ATS compliance analysis. Please try again.');
   }
-};
+}
+
+/**
+ * Generates a tailored resume for a specific job.
+ * @param job The target job.
+ * @param baseResumeContent The user's base resume content.
+ * @param customHeader Optional custom header for the document.
+ * @returns The generated resume text.
+ */
+export async function generateResumeForJob(job: Job, baseResumeContent: ResumeContent, customHeader: string): Promise<string> {
+  const prompt = `Generate a resume tailored specifically for the "${job.title}" position at "${job.company}".
+  Use the following base resume content, but emphasize skills and experience most relevant to the job description,
+  and rephrase bullet points to align with job requirements. Ensure keywords from the job description are naturally integrated.
+  ${customHeader ? `Include this exact header at the very top:\n${customHeader}\n\n` : ''}
+
+  Job Description:
+  ${job.description}
+
+  Base Resume Content:
+  ${baseResumeContent.rawText}
+
+  Focus on a modern, clean, and ATS-friendly format. Prioritize impact and measurable achievements.
+  DO NOT include any introductory or concluding remarks, only the resume content.`;
+
+  try {
+    const response = await ai.models.generateContent({
+      model: 'gemini-2.5-pro', // Pro for high-quality text generation
+      contents: prompt,
+      // No responseMimeType or responseSchema as it's free-form text
+    });
+    return response.text;
+  } catch (error) {
+    console.error('Error generating resume:', error);
+    throw new Error('Failed to generate tailored resume. Please try again.');
+  }
+}
+
+/**
+ * Generates a tailored cover letter for a specific job.
+ * @param job The target job.
+ * @param baseResumeContent The user's base resume content.
+ * @param tone The desired tone for the cover letter.
+ * @param customHeader Optional custom header for the document.
+ * @returns The generated cover letter text.
+ */
+export async function generateCoverLetterForJob(job: Job, baseResumeContent: ResumeContent, tone: string, customHeader: string): Promise<string> {
+  const prompt = `Write a cover letter for the "${job.title}" position at "${job.company}".
+  Adopt a ${tone} tone. Highlight how my skills and experiences align with the job description, drawing from my resume.
+  Address it to the Hiring Manager or Team if no specific name is available.
+  ${customHeader ? `Include this exact header at the very top:\n${customHeader}\n\n` : ''}
+
+  Job Description:
+  ${job.description}
+
+  My Resume Content:
+  ${baseResumeContent.rawText}
+
+  Ensure it is concise, professional, and expresses genuine interest in the role and company.
+  DO NOT include any introductory or concluding remarks, only the cover letter content.`;
+
+  try {
+    const response = await ai.models.generateContent({
+      model: 'gemini-2.5-pro', // Pro for high-quality text generation
+      contents: prompt,
+      // No responseMimeType or responseSchema as it's free-form text
+    });
+    return response.text;
+  } catch (error) {
+    console.error('Error generating cover letter:', error);
+    throw new Error('Failed to generate tailored cover letter. Please try again.');
+  }
+}
+
+/**
+ * Parses raw resume text into a structured ResumeContent object.
+ * @param resumeText The raw text of the resume.
+ * @returns A structured ResumeContent object.
+ */
+export async function parseResumeText(resumeText: string): Promise<ResumeContent> {
+  const prompt = `Parse the following raw resume text and extract the key information into a structured JSON object.
+  Extract:
+  - Raw Text (the original input)
+  - Skills (as an array of strings)
+  - Experience (as an array of objects with title, company, description)
+  - Education (as an array of objects with institution, degree)
+  - Contact Info (name, address, phone, email, optional linkedin, github, portfolio)
+
+  Resume Text:
+  ${resumeText}
+
+  Provide the output strictly as a JSON object following this schema:
+  {
+    "rawText": string,
+    "skills": string[],
+    "experience": [
+      { "title": string, "company": string, "description": string }
+    ],
+    "education": [
+      { "institution": string, "degree": string }
+    ],
+    "contactInfo": {
+      "name": string,
+      "address": string,
+      "phone": string,
+      "email": string,
+      "linkedin"?: string,
+      "github"?: string,
+      "portfolio"?: string
+    }
+  }`;
+
+  try {
+    const response = await ai.models.generateContent({
+      model: 'gemini-2.5-pro', // Pro for complex parsing
+      contents: prompt,
+      config: {
+        responseMimeType: 'application/json',
+        responseSchema: {
+          type: Type.OBJECT,
+          properties: {
+            rawText: { type: Type.STRING },
+            skills: { type: Type.ARRAY, items: { type: Type.STRING } },
+            experience: {
+              type: Type.ARRAY,
+              items: {
+                type: Type.OBJECT,
+                properties: {
+                  title: { type: Type.STRING },
+                  company: { type: Type.STRING },
+                  description: { type: Type.STRING },
+                },
+                required: ['title', 'company', 'description'],
+              },
+            },
+            education: {
+              type: Type.ARRAY,
+              items: {
+                type: Type.OBJECT,
+                properties: {
+                  institution: { type: Type.STRING },
+                  degree: { type: Type.STRING },
+                },
+                required: ['institution', 'degree'],
+              },
+            },
+            contactInfo: {
+              type: Type.OBJECT,
+              properties: {
+                name: { type: Type.STRING },
+                address: { type: Type.STRING },
+                phone: { type: Type.STRING },
+                email: { type: Type.STRING },
+                linkedin: { type: Type.STRING, nullable: true },
+                github: { type: Type.STRING, nullable: true },
+                portfolio: { type: Type.STRING, nullable: true },
+              },
+              required: ['name', 'address', 'phone', 'email'],
+            },
+          },
+          required: ['rawText', 'skills', 'experience', 'education', 'contactInfo'],
+        },
+      },
+    });
+
+    const jsonStr = response.text.trim();
+    const parsedContent = JSON.parse(jsonStr) as ResumeContent;
+    // Ensure rawText is the original input resumeText, not the model's summary if any.
+    return { ...parsedContent, rawText: resumeText };
+  } catch (error) {
+    console.error('Error parsing resume text:', error);
+    throw new Error('Failed to parse resume text. Please ensure the text is a valid resume.');
+  }
+}
+
+/**
+ * Fetches company insights using Google Search and model extraction.
+ * This function uses a two-step approach:
+ * 1. Use Google Search to gather raw information.
+ * 2. Parse the natural language response into a structured CompanyInsights object using another model call.
+ * @param companyName The name of the company to get insights for.
+ * @returns A CompanyInsights object.
+ */
+export async function getCompanyInsights(companyName: string): Promise<CompanyInsights | null> {
+  if (!companyName) {
+    return null;
+  }
+
+  const searchPrompt = `Find recent information, industry, size, headquarters, Glassdoor rating and URL, website for "${companyName}". Summarize recent news or key developments.`;
+
+  try {
+    // Step 1: Use Google Search to gather raw information
+    const searchResponse = await ai.models.generateContent({
+      model: 'gemini-2.5-flash',
+      contents: searchPrompt,
+      config: {
+        tools: [{ googleSearch: {} }],
+      },
+    });
+
+    const rawInsightsText = searchResponse.text;
+    if (!rawInsightsText || rawInsightsText.trim() === '') {
+      console.warn(`No raw text received for company insights for ${companyName}.`);
+      return null;
+    }
+
+    // Step 2: Parse the raw text into a structured CompanyInsights object
+    const parsePrompt = `Parse the following text into a JSON object strictly following the CompanyInsights schema.
+    Extract company name, industry, size, headquarters, Glassdoor rating, Glassdoor URL, recent news (as an array of headlines/summaries), and website.
+    If a field is not found, omit it or set to null. Ensure Glassdoor URL and website are full URLs.
+
+    Text to parse:
+    ${rawInsightsText}
+
+    Schema:
+    {
+      "companyName": string,
+      "industry"?: string,
+      "size"?: string,
+      "headquarters"?: string,
+      "glassdoorRating"?: number,
+      "glassdoorUrl"?: string,
+      "recentNews"?: string[],
+      "website"?: string
+    }`;
+
+    const parseResponse = await ai.models.generateContent({
+      model: 'gemini-2.5-flash', // Use Flash for parsing structured JSON
+      contents: parsePrompt,
+      config: {
+        responseMimeType: 'application/json',
+        responseSchema: {
+          type: Type.OBJECT,
+          properties: {
+            companyName: { type: Type.STRING },
+            industry: { type: Type.STRING, nullable: true },
+            size: { type: Type.STRING, nullable: true },
+            headquarters: { type: Type.STRING, nullable: true },
+            glassdoorRating: { type: Type.NUMBER, nullable: true },
+            glassdoorUrl: { type: Type.STRING, nullable: true },
+            recentNews: { type: Type.ARRAY, items: { type: Type.STRING }, nullable: true },
+            website: { type: Type.STRING, nullable: true },
+          },
+          required: ['companyName'],
+        },
+      },
+    });
+
+    const jsonStr = parseResponse.text.trim();
+    const insights = JSON.parse(jsonStr) as CompanyInsights;
+
+    // Ensure companyName is explicitly set, as the model might infer it differently
+    insights.companyName = companyName;
+
+    return insights;
+  } catch (error) {
+    console.error(`Error fetching company insights for ${companyName}:`, error);
+    // Return null or re-throw specific errors if needed
+    return null;
+  }
+}
+    

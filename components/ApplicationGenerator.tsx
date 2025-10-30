@@ -5,6 +5,57 @@ import { SkillGapAnalysis, Application, TailoredDocument, TailoredDocumentType }
 import { LoadingSpinner } from './icons';
 import { downloadDocxFile } from '../utils/fileUtils';
 
+// Helper to format ATS Report content for download (DOCX)
+export const formatAtsReportContent = ( // Exported for use in MyApplications.tsx
+  jobTitle: string,
+  companyName: string,
+  atsScore: Application['atsScore'] | undefined,
+): string => {
+  if (!atsScore) {
+    return `ATS Compliance Report for ${jobTitle} at ${companyName}
+Generated on: ${new Date().toLocaleDateString()}
+
+No ATS score data available.`;
+  }
+
+  let markdownContent = `# ATS Compliance Report
+${jobTitle} at ${companyName}
+Generated on: ${new Date().toLocaleDateString()}
+
+## Overall Score
+*ATS Match Score:* **${atsScore.score}/100**
+*Feedback:* ${atsScore.feedback}
+`;
+
+  if (atsScore.missingKeywords && atsScore.missingKeywords.length > 0) {
+    markdownContent += `
+## Missing Keywords from Job Description
+`;
+    atsScore.missingKeywords.forEach((keyword) => {
+      markdownContent += `- ${keyword}\n`;
+    });
+  }
+
+  if (atsScore.integrationSuggestions && atsScore.integrationSuggestions.length > 0) {
+    markdownContent += `
+## Suggestions for Integration
+`;
+    atsScore.integrationSuggestions.forEach((suggestion) => {
+      markdownContent += `- ${suggestion}\n`;
+    });
+  }
+
+  if (atsScore.jargonCheck) {
+    markdownContent += `
+## Industry Jargon Assessment
+${atsScore.jargonCheck}
+`;
+  }
+
+  return markdownContent.trim();
+};
+
+
 const ApplicationGenerator: React.FC = () => {
   const { generationContext, setGenerationContext, setApplications, setView, setError, setTailoredDocuments } = useAppContext(); // Get global setError and setTailoredDocuments
   
@@ -24,7 +75,7 @@ const ApplicationGenerator: React.FC = () => {
   const [isSavingGenerated, setIsSavingGenerated] = useState(false); // New state for saving generated documents
 
   const { job, baseResume } = generationContext || {};
-  const atsReportRef = useRef<HTMLDivElement>(null);
+  // Removed atsReportRef as content will be generated dynamically now.
 
 
   const runSkillAnalysis = useCallback(async () => {
@@ -206,6 +257,15 @@ const ApplicationGenerator: React.FC = () => {
     return 'text-red-500';
   };
 
+  const handleDownloadAtsDocx = async () => { 
+    if (atsScore && job) {
+      const markdownContent = formatAtsReportContent(job.title, job.company, atsScore);
+      downloadDocxFile(`${job.company}-${job.title}-ATS-Report.docx`, markdownContent);
+    } else {
+      setError("No ATS score data to download.");
+    }
+  };
+
 
   return (
     <div className="space-y-8">
@@ -287,11 +347,20 @@ const ApplicationGenerator: React.FC = () => {
                         </div>
                     )}
 
-                     <button onClick={() => downloadDocxFile(`${job.company}-${job.title}-ATS-Report.docx`, atsReportRef.current?.innerText || '')} className="mt-4 w-full bg-gray-200 dark:bg-gray-700 hover:bg-gray-300 dark:hover:bg-gray-600 font-bold py-2 px-4 rounded-lg text-sm">
-                        Download Report (DOCX)
-                    </button>
+                     <div className="mt-4 flex gap-2">
+                        <button onClick={handleDownloadAtsDocx} className="flex-1 bg-gray-200 dark:bg-gray-700 hover:bg-gray-300 dark:hover:bg-gray-600 font-bold py-2 px-4 rounded-lg text-sm">
+                            Download DOCX
+                        </button>
+                        {/* PDF Download Button Removed */}
+                     </div>
                 </div>
-              ) : <p className="text-sm text-gray-500 text-center">Generate a resume to see the ATS report.</p>
+              ) : (
+                atsScore === undefined && !loading.ats ? (
+                    <p className="text-sm text-gray-500 text-center">Generate a resume to see the ATS report.</p>
+                ) : (
+                    <p className="text-sm text-gray-500 text-center">No ATS score data available.</p>
+                )
+              )
             }
           </div>
 

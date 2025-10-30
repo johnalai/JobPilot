@@ -2,6 +2,8 @@ import React, { useState } from 'react';
 import { useAppContext } from '../context/AppContext';
 import { Application, ApplicationStatus, TailoredDocumentType } from '../types';
 import { TrashIcon } from './icons';
+import { formatAtsReportContent } from './ApplicationGenerator'; // Import ATS report formatter
+import { downloadDocxFile } from '../utils/fileUtils'; // Import DOCX utility
 
 const MyApplications: React.FC = () => {
   const { applications, setApplications, setView, setSelectedApplicationForInterview, tailoredDocuments, setSelectedTailoredDocumentId, setError } = useAppContext();
@@ -37,6 +39,22 @@ const MyApplications: React.FC = () => {
         setView('tailored-docs');
     } else {
         setError(`The ${documentType} for this application was not found in Tailored Documents. It might have been deleted.`);
+    }
+  };
+
+  const getScoreColor = (score: number | undefined) => {
+    if (score === undefined) return 'text-gray-500';
+    if (score >= 85) return 'text-green-500';
+    if (score >= 70) return 'text-yellow-500';
+    return 'text-red-500';
+  };
+
+  const handleDownloadAtsDocx = (app: Application) => {
+    if (app.atsScore && app.job) {
+      const markdownContent = formatAtsReportContent(app.job.title, app.job.company, app.atsScore);
+      downloadDocxFile(`${app.job.company}-${app.job.title}-ATS-Report.docx`, markdownContent);
+    } else {
+      setError("No ATS score data to download for this application.");
     }
   };
   
@@ -81,6 +99,43 @@ const MyApplications: React.FC = () => {
                 </button>
             </div>
           </div>
+
+          {app.atsScore && (
+            <div className="mt-6 pt-4 border-t dark:border-gray-700">
+                <h4 className="font-semibold text-lg mb-4">ATS Compliance Report</h4>
+                <div className="text-center">
+                    <div className="relative w-24 h-24 mx-auto mb-2" aria-label={`ATS Score: ${app.atsScore.score} percent`}>
+                        <svg className="w-full h-full" viewBox="0 0 100 100">
+                            {/* Background circle */}
+                            <circle className="text-gray-200 dark:text-gray-700" strokeWidth="10" stroke="currentColor" fill="transparent" r="45" cx="50" cy="50" />
+                            {/* Progress circle */}
+                            <circle className={`${getScoreColor(app.atsScore.score)} transition-all duration-1000 ease-out`} strokeWidth="10" strokeDasharray={2 * Math.PI * 45} strokeDashoffset={(2 * Math.PI * 45) - (app.atsScore.score / 100) * (2 * Math.PI * 45)} strokeLinecap="round" stroke="currentColor" fill="transparent" r="45" cx="50" cy="50" transform="rotate(-90 50 50)" />
+                        </svg>
+                        <div className={`absolute inset-0 flex items-center justify-center text-2xl font-bold ${getScoreColor(app.atsScore.score)}`}>{app.atsScore.score}</div>
+                    </div>
+                    <p className="font-semibold">Match Score</p>
+                    <p className="text-sm mt-2 text-gray-600 dark:text-gray-400">{app.atsScore.feedback}</p>
+
+                    {app.atsScore.missingKeywords && app.atsScore.missingKeywords.length > 0 && (
+                        <div className="mt-3 text-left">
+                            <h5 className="font-bold text-red-600 dark:text-red-400">Missing Keywords:</h5>
+                            <ul className="list-disc list-inside text-xs text-gray-700 dark:text-gray-300">
+                                {app.atsScore.missingKeywords.map((keyword, i) => (
+                                    <li key={i}>{keyword}</li>
+                                ))}
+                            </ul>
+                        </div>
+                    )}
+                    <div className="mt-4">
+                        <button onClick={() => handleDownloadAtsDocx(app)} className="w-full bg-gray-200 dark:bg-gray-700 hover:bg-gray-300 dark:hover:bg-gray-600 font-bold py-2 px-4 rounded-lg text-sm">
+                            Download ATS Report (DOCX)
+                        </button>
+                    </div>
+                </div>
+            </div>
+          )}
+
+
           <div className="mt-auto pt-4 border-t dark:border-gray-700">
               <button onClick={() => handlePractice(app)} className="w-full bg-purple-600 hover:bg-purple-700 text-white font-bold py-3 px-4 rounded-lg">
                   Practice Interview

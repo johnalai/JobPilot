@@ -28,3 +28,13 @@ export async function decodeAudioData(
   }
   return buffer;
 }
+
+// Helper to encode Uint8Array to base64 string
+export function encode(bytes: Uint8Array) {
+  let binary = '';
+  const len = bytes.byteLength;
+  for (let i = 0; i < len; i++) {
+    binary += String.fromCharCode(bytes[i]);
+  }
+  return btoa(binary);
+}

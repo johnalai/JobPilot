@@ -45,6 +45,9 @@ export interface ResumeContent {
     address: string;
     phone: string;
     email: string;
+    linkedin?: string; // New: Optional LinkedIn URL
+    github?: string; // New: Optional GitHub URL
+    portfolio?: string; // New: Optional Portfolio URL
   };
 }
 

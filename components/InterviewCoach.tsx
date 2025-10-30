@@ -1,22 +1,12 @@
-
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 // FIX: Use relative paths for local module imports.
 import { useAppContext } from '../context/AppContext';
 import { LoadingSpinner } from './icons';
 import { GoogleGenAI, LiveServerMessage, Modality, Blob, Type, FunctionDeclaration } from '@google/genai';
 import { InterviewFeedback, Application } from '../types';
-import { decode, decodeAudioData } from '../utils/audioUtils'; // Import from new utils
-import { downloadElementAsPdf } from '../utils/fileUtils'; // Import for PDF download
+import { decode, decodeAudioData, encode } from '../utils/audioUtils'; // Import from new utils, and encode from audioUtils
+// Removed downloadElementAsPdf import
 
-// Helper to encode audio data (remains here as it's specific to microphone input processing)
-const encode = (bytes: Uint8Array) => {
-    let binary = '';
-    const len = bytes.byteLength;
-    for (let i = 0; i < len; i++) {
-        binary += String.fromCharCode(bytes[i]);
-    }
-    return btoa(binary);
-};
 
 interface TranscriptEntry {
     speaker: 'user' | 'model';
@@ -30,6 +20,38 @@ const AI_VOICES = [
     { name: 'Kore', value: 'Kore' },
     { name: 'Fenrir', value: 'Fenrir' },
 ];
+
+const SUGGESTED_QA = [
+    {
+        question: "Tell me about yourself.",
+        answer: "Start with your present, then go to the past (relevant experiences), and end with how your future goals align with this role/company. Keep it concise, around 1-2 minutes, and focus on professional achievements and aspirations."
+    },
+    {
+        question: "Why are you interested in this position?",
+        answer: "Show genuine interest by mentioning specific aspects of the role, the company's mission/culture, or recent achievements that resonate with you. Connect it to your skills and career goals."
+    },
+    {
+        question: "What are your greatest strengths?",
+        answer: "Choose 1-2 strengths relevant to the job, provide a specific example of how you've demonstrated them, and explain the positive outcome. Avoid generic terms without context."
+    },
+    {
+        question: "What are your greatest weaknesses?",
+        answer: "Identify a real, but not critical, weakness. Explain what you're doing to improve it, and show self-awareness and a commitment to growth. Frame it positively if possible (e.g., 'I used to struggle with X, but now I do Y')."
+    },
+    {
+        question: "Where do you see yourself in five years?",
+        answer: "Align your aspirations with the growth opportunities within the company. Show ambition and a desire to contribute long-term, but be realistic and flexible."
+    },
+    {
+        question: "Why do you want to leave your current job?",
+        answer: "Focus on growth opportunities, new challenges, or a better cultural fit rather than complaining about your previous role. Keep it positive and forward-looking."
+    },
+    {
+        question: "Do you have any questions for us?",
+        answer: "Always ask questions! Prepare 2-3 thoughtful questions about the role, team, company culture, or next steps. This shows engagement and genuine interest."
+    }
+];
+
 
 const FeedbackDisplay: React.FC<{ feedback: InterviewFeedback | null, isLive?: boolean }> = ({ feedback, isLive = true }) => {
     if (!feedback) return null;
@@ -74,6 +96,9 @@ const FeedbackDisplay: React.FC<{ feedback: InterviewFeedback | null, isLive?: b
     );
 };
 
+// formatInterviewReportContent is removed
+
+
 export const InterviewCoach: React.FC = () => {
     const { selectedApplicationForInterview: app, setSelectedApplicationForInterview, applications, resumes, setError } = useAppContext(); // Get global setError
     const [isSessionActive, setIsSessionActive] = useState(false);
@@ -87,12 +112,15 @@ export const InterviewCoach: React.FC = () => {
 
     const [manualJobTitle, setManualJobTitle] = useState('');
     const [showSettings, setShowSettings] = useState(false); // State for collapsible settings
+    const [showSuggestedQA, setShowSuggestedQA] = useState(false); // New: State for suggested Q&A
 
     // AI Voice & Speaking Rate States
     const [selectedVoice, setSelectedVoice] = useState<'Zephyr' | 'Puck' | 'Charon' | 'Kore' | 'Fenrir'>('Zephyr');
     const [speakingRate, setSpeakingRate] = useState(1.0);
 
-    const sessionPromiseRef = useRef<Promise<any> | null>(null);
+    // FIX: Infer LiveSession type dynamically from GoogleGenAI['live']['connect']
+    const sessionPromiseRef = useRef<Promise<Awaited<ReturnType<GoogleGenAI['live']['connect']>>> | null>(null); // Store the actual promise
+    const liveSessionRef = useRef<Awaited<ReturnType<GoogleGenAI['live']['connect']>> | null>(null); // Store the resolved LiveSession object
     const inputAudioContextRef = useRef<AudioContext | null>(null);
     const outputAudioContextRef = useRef<AudioContext | null>(null);
     let nextStartTime = useRef(0); // Using ref for nextStartTime for consistent updates
@@ -100,18 +128,20 @@ export const InterviewCoach: React.FC = () => {
     const scriptProcessorRef = useRef<ScriptProcessorNode | null>(null);
 
     const transcriptEndRef = useRef<HTMLDivElement>(null);
-    const interviewReportCardRef = useRef<HTMLDivElement>(null);
+    // Removed interviewReportCardRef as content will be generated dynamically now.
 
     useEffect(() => {
         transcriptEndRef.current?.scrollIntoView({ behavior: 'smooth' });
     }, [transcripts]);
 
     const stopSession = useCallback(async () => {
-        if (sessionPromiseRef.current) {
-            const session = await sessionPromiseRef.current;
-            session.close();
-            sessionPromiseRef.current = null;
+        // Close the actual LiveSession object if it exists
+        if (liveSessionRef.current) {
+            liveSessionRef.current.close();
+            liveSessionRef.current = null;
         }
+        sessionPromiseRef.current = null; // Clear the promise reference too
+
         if (microphoneStreamRef.current) {
             microphoneStreamRef.current.getTracks().forEach(track => track.stop());
             microphoneStreamRef.current = null;
@@ -122,9 +152,11 @@ export const InterviewCoach: React.FC = () => {
         }
         if (inputAudioContextRef.current && inputAudioContextRef.current.state !== 'closed') {
            await inputAudioContextRef.current.close();
+           inputAudioContextRef.current = null;
         }
         if (outputAudioContextRef.current && outputAudioContextRef.current.state !== 'closed') {
             await outputAudioContextRef.current.close();
+            outputAudioContextRef.current = null;
         }
         nextStartTime.current = 0; // Reset nextStartTime
         setIsSessionActive(false);
@@ -146,9 +178,19 @@ export const InterviewCoach: React.FC = () => {
         }
     }, [cumulativeFeedback, setError]); // Added setError to dependencies
 
-    // Placeholder for startSession logic
+    const createBlob = (data: Float32Array): Blob => {
+      const l = data.length;
+      const int16 = new Int16Array(l);
+      for (let i = 0; i < l; i++) {
+        int16[i] = data[i] * 32768;
+      }
+      return {
+        data: encode(new Uint8Array(int16.buffer)),
+        mimeType: 'audio/pcm;rate=16000',
+      };
+    };
+
     const startSession = useCallback(async () => {
-      // Dummy logic for now
       setIsLoading(true);
       setError(null);
       setTranscripts([]);
@@ -157,7 +199,6 @@ export const InterviewCoach: React.FC = () => {
       setLatestFeedback(null);
 
       try {
-        // Initialize GoogleGenAI instance *after* potential key selection
         const ai = new GoogleGenAI({ apiKey: process.env.API_KEY! });
         
         inputAudioContextRef.current = new (window.AudioContext || (window as any).webkitAudioContext)({ sampleRate: 16000 });
@@ -166,25 +207,17 @@ export const InterviewCoach: React.FC = () => {
 
         microphoneStreamRef.current = await navigator.mediaDevices.getUserMedia({ audio: true });
 
-        const systemInstruction = app ?
-            `You are an AI interview coach. Your goal is to conduct a mock interview for the position of "${app.job.title}" at "${app.job.company}".
-            The candidate's base resume skills are: ${resumes.find(r => r.id === app.baseResumeId)?.activeContent.skills.join(', ') || 'not available'}.
-            The job description is: ${app.job.description}.
-            Ask relevant interview questions, provide constructive feedback on answers, and adapt the conversation based on the candidate's responses.
-            Keep your responses concise and to the point.
-            After each answer from the user, provide a quick score (0-100), identify 1-2 strengths, and 1-2 areas for improvement in JSON format.
-            Example feedback format: {"score": 85, "strengths": ["Clear explanation"], "areasForImprovement": ["Could provide a specific example"]}.
-            Do NOT provide interview feedback at the start. Start by welcoming the candidate and asking the first question.
-            Provide feedback ONLY when the user stops speaking for a turn.
-            ` :
-            `You are an AI interview coach. Your goal is to conduct a mock interview for a "${manualJobTitle || 'general role'}".
-            Ask relevant interview questions, provide constructive feedback on answers, and adapt the conversation based on the candidate's responses.
-            Keep your responses concise and to the point.
-            After each answer from the user, provide a quick score (0-100), identify 1-2 strengths, and 1-2 areas for improvement in JSON format.
-            Example feedback format: {"score": 85, "strengths": ["Clear explanation"], "areasForImprovement": ["Could provide a specific example"]}.
-            Do NOT provide interview feedback at the start. Start by welcoming the candidate and asking the first question.
-            Provide feedback ONLY when the user stops speaking for a turn.
-            `;
+        const jobTitleForInstruction = app?.job.title || manualJobTitle || 'general role';
+        const companyNameForInstruction = app?.job.company || '';
+        
+        // MODIFIED: Simplified systemInstruction to avoid potential "invalid argument" due to long text
+        // and to not claim access to data not explicitly provided in live.connect.
+        const systemInstruction = `You are an AI interview coach. Your goal is to conduct a mock interview for the position of "${jobTitleForInstruction}"${companyNameForInstruction ? ` at "${companyNameForInstruction}"` : ''}.
+        Your responses should be concise.
+        After each answer from the user, provide a quick score (0-100), identify 1-2 strengths, and 1-2 areas for improvement.
+        Do NOT provide interview feedback at the start. Start by welcoming the candidate and asking the first question.
+        Provide feedback ONLY when the user stops speaking for a turn.`;
+
 
         const getInterviewFeedbackFunction: FunctionDeclaration = {
           name: 'getInterviewFeedback',
@@ -200,13 +233,20 @@ export const InterviewCoach: React.FC = () => {
           },
         };
 
-        const session = await ai.live.connect({
+        // CRITICAL FIX: Assign the actual promise from ai.live.connect
+        const connectPromise = ai.live.connect({
           model: 'gemini-2.5-flash-native-audio-preview-09-2025',
           callbacks: {
             onopen: () => {
               console.debug('Live session opened');
               setIsLoading(false);
-              setIsSessionActive(true);
+              setIsSessionActive(true); // Only set active when successfully opened
+
+              // Store the resolved session object for direct closure in stopSession
+              connectPromise.then(session => {
+                  liveSessionRef.current = session;
+              }).catch(e => console.error("Error setting liveSessionRef after onopen:", e));
+
 
               const source = inputAudioContextRef.current?.createMediaStreamSource(microphoneStreamRef.current!);
               scriptProcessorRef.current = inputAudioContextRef.current?.createScriptProcessor(4096, 1, 1);
@@ -214,7 +254,8 @@ export const InterviewCoach: React.FC = () => {
                 scriptProcessorRef.current.onaudioprocess = (audioProcessingEvent) => {
                   const inputData = audioProcessingEvent.inputBuffer.getChannelData(0);
                   const pcmBlob = createBlob(inputData);
-                  sessionPromiseRef.current?.then((s) => {
+                  // Use the connectPromise here, not sessionPromiseRef.current directly
+                  connectPromise.then((s) => { // 's' is the LiveSession object
                     s.sendRealtimeInput({ media: pcmBlob });
                   });
                 };
@@ -276,16 +317,19 @@ export const InterviewCoach: React.FC = () => {
               if (message.toolCall?.functionCalls) {
                 for (const fc of message.toolCall.functionCalls) {
                   if (fc.name === 'getInterviewFeedback' && fc.args) {
-                    const feedback: InterviewFeedback = fc.args as InterviewFeedback;
+                    // FIX: Convert the expression to 'unknown' first to resolve the type conversion error.
+                    const feedback: InterviewFeedback = fc.args as unknown as InterviewFeedback;
                     setLatestFeedback(feedback);
                     setCumulativeFeedback(prev => [...prev, feedback]);
                     // Send tool response to update model context
-                    session.sendToolResponse({
-                      functionResponses: {
-                        id: fc.id,
-                        name: fc.name,
-                        response: { result: "Feedback processed." },
-                      }
+                    connectPromise.then((s) => {
+                      s.sendToolResponse({
+                        functionResponses: {
+                          id: fc.id,
+                          name: fc.name,
+                          response: { result: "Feedback processed." },
+                        }
+                      })
                     });
                   }
                 }
@@ -308,7 +352,8 @@ export const InterviewCoach: React.FC = () => {
             responseModalities: [Modality.AUDIO],
             speechConfig: {
               voiceConfig: { prebuiltVoiceConfig: { voiceName: selectedVoice } },
-              speakingRate: speakingRate, // Apply speaking rate
+              // FIX: Removed 'speakingRate' as it's not a supported property in the speechConfig based on guidelines.
+              // speakingRate: speakingRate, 
             },
             systemInstruction: systemInstruction,
             tools: [{ functionDeclarations: [getInterviewFeedbackFunction] }],
@@ -316,33 +361,16 @@ export const InterviewCoach: React.FC = () => {
             outputAudioTranscription: {}, // Enable transcription for model output audio.
           },
         });
-        sessionPromiseRef.current = Promise.resolve(session);
+        sessionPromiseRef.current = connectPromise; // Store the actual promise
 
       } catch (e: any) {
         setError(e.message || 'Failed to start live interview session.');
         setIsLoading(false);
+        stopSession(); // Clean up if initial setup fails before connectPromise is even assigned
       }
-    }, [app, resumes, manualJobTitle, selectedVoice, speakingRate, cumulativeFeedback, setError, stopSession]); // Dependencies
+    }, [app, manualJobTitle, selectedVoice, speakingRate, cumulativeFeedback, setError, stopSession]); // Dependencies
 
-    const createBlob = (data: Float32Array): Blob => {
-      const l = data.length;
-      const int16 = new Int16Array(l);
-      for (let i = 0; i < l; i++) {
-        int16[i] = data[i] * 32768;
-      }
-      return {
-        data: encode(new Uint8Array(int16.buffer)),
-        mimeType: 'audio/pcm;rate=16000',
-      };
-    };
-
-    const handleDownloadReport = () => {
-        if (finalFeedback && interviewReportCardRef.current) {
-            downloadElementAsPdf('interview-report-card', `Interview_Report_${app?.job.title || manualJobTitle || 'General'}.pdf`);
-        } else {
-            setError("No final report to download. Complete an interview first.");
-        }
-    };
+    // handleDownloadReport function removed
 
     const jobTitle = app?.job.title || manualJobTitle;
     const companyName = app?.job.company || '';
@@ -454,17 +482,36 @@ export const InterviewCoach: React.FC = () => {
                                         </div>
                                     </div>
                                 )}
+                                {/* New: Suggested Questions & Answers */}
+                                <button
+                                    onClick={() => setShowSuggestedQA(!showSuggestedQA)}
+                                    className="w-full bg-gray-200 dark:bg-gray-700 hover:bg-gray-300 dark:hover:bg-gray-600 text-gray-800 dark:text-gray-200 font-bold py-2 px-4 rounded-lg"
+                                    disabled={isSessionActive}
+                                >
+                                    {showSuggestedQA ? 'Hide Suggested Q&A' : 'Show Suggested Q&A'}
+                                </button>
+                                {showSuggestedQA && (
+                                    <div className="mt-4 p-4 border rounded-lg dark:border-gray-700 animate-fade-in max-h-80 overflow-y-auto">
+                                        <h4 className="font-semibold mb-3">Common Interview Questions & Tips</h4>
+                                        <div className="space-y-4">
+                                            {SUGGESTED_QA.map((qa, index) => (
+                                                <div key={index} className="border-b pb-3 last:border-b-0 last:pb-0 dark:border-gray-700">
+                                                    <p className="font-bold text-blue-600 dark:text-blue-400 mb-1">Q: {qa.question}</p>
+                                                    <p className="text-sm text-gray-700 dark:text-gray-300">A: {qa.answer}</p>
+                                                </div>
+                                            ))}
+                                        </div>
+                                    </div>
+                                )}
                             </div>
                         </div>
                         {isSessionActive && latestFeedback && (
                             <FeedbackDisplay feedback={latestFeedback} isLive={true} />
                         )}
                         {!isSessionActive && finalFeedback && (
-                             <div id="interview-report-card" ref={interviewReportCardRef} className="bg-white dark:bg-gray-800 p-6 rounded-xl shadow-lg">
+                             <div id="interview-report-card" className="bg-white dark:bg-gray-800 p-6 rounded-xl shadow-lg">
                                 <FeedbackDisplay feedback={finalFeedback} isLive={false} />
-                                <button onClick={handleDownloadReport} className="mt-4 w-full bg-gray-200 dark:bg-gray-700 hover:bg-gray-300 dark:hover:bg-gray-600 font-bold py-2 px-4 rounded-lg text-sm">
-                                    Download Full Report (PDF)
-                                </button>
+                                {/* Download Full Report (PDF) button removed */}
                             </div>
                         )}
                     </div>
