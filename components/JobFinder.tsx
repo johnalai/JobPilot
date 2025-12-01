@@ -1,394 +1,470 @@
-import React, { useState, useEffect, useCallback, useRef } from 'react';
+
+import React, { useState, useEffect, useRef, useCallback } from 'react';
+// Import useAppContext from AppContext.tsx
 import { useAppContext } from '../context/AppContext';
-import { findJobs, FindJobsFilters, DOMAINS_TO_AVOID_AS_PRIMARY_SOURCE, getDomain } from '../services/geminiService';
-import { Job, WebGroundingChunk } from '../types';
-import { LoadingSpinner, BookmarkIcon, LocationMarkerIcon, CalendarIcon, BriefcaseIcon } from './icons';
-import CompanyInsightsDisplay from './CompanyInsightsDisplay'; // Import new component
+import { Job, GroundingDetail } from '../types';
+import { PaperAirplaneIcon, BookmarkIcon as BookmarkOutlineIcon, MagnifyingGlassIcon, XMarkIcon } from '@heroicons/react/24/outline';
+import { BookmarkIcon as BookmarkSolidIcon } from '@heroicons/react/24/solid';
+import { analyzeJobUrl, analyzeJobText, getCompanyInsights, isAvoidedDomain } from '../services/geminiService'; // Import isAvoidedDomain
+import CompanyInsightsDisplay from './CompanyInsightsDisplay'; // Assuming this component exists
+import MarkdownRenderer from './MarkdownRenderer';
 
-const initialFilters: FindJobsFilters = {
-  query: '',
-  location: '',
-  workModel: 'Any',
-  minSalary: '',
-  experienceLevel: 'Any',
-  skills: ''
-};
-
-const JobFinder: React.FC = () => {
+function JobFinder() {
   const {
-    resumes,
-    defaultResumeId,
-    setView,
-    setGenerationContext,
-    selectedJobForViewing,
-    setSelectedJobForViewing,
-    savedJobs,
-    setSavedJobs,
-    frequentlySearchedKeywords, // Get from context
-    setFrequentlySearchedKeywords, // Get from context
-    setError, // Import setError from context
+    jobs,
+    setJobs,
+    savedJobs, // Use savedJobs from context to check if a job is saved
+    saveJob,   // Use saveJob from context to add/update
+    removeSavedJob, // Use removeSavedJob from context to remove
+    addFrequentlySearchedKeyword,
+    frequentlySearchedKeywords,
   } = useAppContext();
 
-  const [filters, setFilters] = useState<FindJobsFilters>(() => {
-    const savedFilters = localStorage.getItem('jobFilters');
-    return savedFilters ? JSON.parse(savedFilters) : initialFilters;
-  });
-  const [showAdvanced, setShowAdvanced] = useState(false);
-  const [jobs, setJobs] = useState<Job[]>([]);// FIX: Explicitly specify the type of `jobs`
+  const [searchQuery, setSearchQuery] = useState('');
+  const [locationQuery, setLocationQuery] = useState('');
   const [loading, setLoading] = useState(false);
-  const [currentError, setCurrentError] = useState<string | null>(null); // Use a local error state for display in this component
+  const [error, setError] = useState<string | null>(null);
+  const [selectedJob, setSelectedJob] = useState<Job | null>(null);
+  const [showCompanyInsights, setShowCompanyInsights] = useState(false);
+  const [jobDescriptionInput, setJobDescriptionInput] = useState(''); // For manual input
+  const [isManualInputMode, setIsManualInputMode] = useState(false); // To toggle input mode
+  const [showKeywords, setShowKeywords] = useState(false);
 
-  // New states for autocomplete
-  const [filteredSuggestions, setFilteredSuggestions] = useState<string[]>([]);
-  const [showSuggestions, setShowSuggestions] = useState(false);
-  const searchInputRef = useRef<HTMLInputElement>(null); // Ref for the query input
+  // Infinite scroll
+  const observer = useRef<IntersectionObserver | null>(null);
+  const lastJobElementRef = useCallback((node: HTMLLIElement | null) => { // Changed to HTMLLIElement
+    if (loading) return;
+    if (observer.current) observer.current.disconnect();
 
-
-  const selectedJob = selectedJobForViewing;
-  const defaultResume = resumes.find(r => r.id === defaultResumeId);
-
-  useEffect(() => {
-    localStorage.setItem('jobFilters', JSON.stringify(filters));
-  }, [filters]);
-  
-  // Effect to clear the selected job when the component is left
-  useEffect(() => {
-    return () => {
-      if (selectedJobForViewing) {
-        setSelectedJobForViewing(null);
-      }
-    }
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
-
-
-  const handleFilterChange = (e: React.ChangeEvent<HTMLInputElement | HTMLSelectElement>) => {
-    const { name, value } = e.target;
-    setFilters(prev => ({ ...prev, [name]: value }));
-
-    // Autocomplete logic for the 'query' field
-    if (name === 'query') {
-      if (value.trim().length > 0) {
-        const lowerCaseValue = value.toLowerCase();
-        const newSuggestions = frequentlySearchedKeywords
-          .filter(keyword => keyword.toLowerCase().includes(lowerCaseValue))
-          .slice(0, 5); // Limit to top 5 suggestions
-        setFilteredSuggestions(newSuggestions);
-        // Only show suggestions if there are actual suggestions
-        setShowSuggestions(newSuggestions.length > 0);
-      } else {
-        setFilteredSuggestions([]);
-        setShowSuggestions(false);
-      }
-    }
-  };
-
-  const handleSelectSuggestion = (suggestion: string) => {
-    setFilters(prev => ({ ...prev, query: suggestion }));
-    setFilteredSuggestions([]);
-    setShowSuggestions(false);
-    searchInputRef.current?.focus(); // Keep focus on the input after selection
-  };
-
-  const handleSearch = useCallback(async () => {
-    setLoading(true);
-    setCurrentError(null); // Clear local error state
-    setError(null); // Clear global error state for AI issues
-    setJobs([]);
-    setSelectedJobForViewing(null);
-
-    // Save search query to frequently searched keywords
-    if (filters.query.trim()) {
-      setFrequentlySearchedKeywords(prev => {
-        const normalizedQuery = filters.query.trim().toLowerCase();
-        // Filter out the existing keyword (case-insensitive) and add the new one to the front
-        const existingKeywords = prev.filter(k => k.toLowerCase() !== normalizedQuery);
-        return [filters.query.trim(), ...existingKeywords].slice(0, 10); // Keep only the latest 10 unique keywords
-      });
-    }
-
-    try {
-      const results = await findJobs(filters, defaultResume?.activeContent || null);
-      setJobs(results);
-    } catch (e: any) {
-      setCurrentError(e.message || "Failed to find jobs."); // Set local error
-      setError(e.message || "Failed to find jobs (AI service error)."); // Set global error for persistent visibility
-    } finally {
-      setLoading(false);
-      setShowSuggestions(false); // Hide suggestions after search
-    }
-  }, [filters, defaultResume, setSelectedJobForViewing, setFrequentlySearchedKeywords, setError]);
-
-  const handleApply = (job: Job) => {
-    if (!defaultResume) {
-      setCurrentError("Please set a default resume before generating an application."); // Use local error
-      // Clear error after a few seconds
-      setTimeout(() => setCurrentError(null), 3000);
-      return;
-    }
-    // FIX: Pass activeContent to generationContext
-    setGenerationContext({ job, baseResume: { id: defaultResume.id, name: defaultResume.name, activeContent: defaultResume.activeContent, versions: defaultResume.versions } });
-    setView('application-generator');
-  };
-
-  const handleToggleSaveJob = (job: Job) => {
-    const isSaved = savedJobs.some(saved => saved.id === job.id);
-    if (isSaved) {
-      setSavedJobs(prev => prev.filter(saved => saved.id !== job.id));
-    } else {
-      setSavedJobs(prev => [...prev, job]);
-    }
-  };
-
-  const handleSaveAllDisplayedJobs = () => {
-    const newSavedJobs = new Set(savedJobs.map(j => j.id));
-    const jobsToSave = jobs.filter(job => !newSavedJobs.has(job.id));
-    if (jobsToSave.length > 0) {
-      setSavedJobs(prev => [...prev, ...jobsToSave]);
-      // Optionally provide feedback to user
-      setCurrentError(`Successfully saved ${jobsToSave.length} jobs.`); // Use local error
-      setTimeout(() => setCurrentError(null), 3000);
-    } else {
-      setCurrentError("All displayed jobs are already saved."); // Use local error
-      setTimeout(() => setCurrentError(null), 3000);
-    }
-  };
-
-
-  const formattedMarkdown = (text: string = '') => {
-    return text
-      .replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>')
-      .split('\n')
-      .map((line, index) => {
-        line = line.trim();
-        if (line.startsWith('* ') || line.startsWith('- ')) {
-          return <li key={index} className="ml-4">{line.substring(2)}</li>;
-        }
-        if (line.length > 0) {
-          return <p key={index} className="mb-2" dangerouslySetInnerHTML={{ __html: line }}></p>; // Use dangerouslySetInnerHTML for markdown
-        }
-        return null;
-      });
-  };
-
-
-  const renderGroundingLinks = (groundingChunks?: Job['grounding']) => {
-    if (!groundingChunks || groundingChunks.length === 0) return null;
-
-    const uniqueLinks = new Map<string, { uri: string, title?: string }>();
-
-    groundingChunks.forEach(chunk => {
-      let uri = '';
-      let title = '';
-
-      // Only process web grounding chunks, maps grounding is removed
-      if ('web' in chunk && chunk.web?.uri) {
-        uri = chunk.web.uri;
-        title = chunk.web.title || uri;
-      }
-      
-      // Filter out undesirable domains (already done in geminiService, but defensive check)
-      if (uri && !DOMAINS_TO_AVOID_AS_PRIMARY_SOURCE.some(domain => getDomain(uri).includes(domain))) {
-        uniqueLinks.set(uri, { uri, title });
+    observer.current = new IntersectionObserver((entries) => {
+      if (entries[0].isIntersecting) {
+        // This is a placeholder for actual infinite scroll logic.
+        fetchMoreJobs();
       }
     });
 
-    if (uniqueLinks.size === 0) return null;
+    if (node) observer.current.observe(node);
+  }, [loading]);
+
+  // Placeholder for fetching more jobs for infinite scroll
+  const fetchMoreJobs = useCallback(() => {
+    // Implement actual pagination API call here
+    console.log("Simulating fetching more jobs...");
+    // For now, just generate a few dummy jobs
+    setLoading(true);
+    setTimeout(() => {
+      const newJobs: Job[] = Array.from({ length: 5 }, (_, i) => ({
+        id: `dummy-${jobs?.length || 0 + i}`,
+        title: `Simulated Job ${jobs?.length || 0 + i}`,
+        company: `Simulated Corp ${jobs?.length || 0 % 3}`,
+        location: `Remote, Earth`,
+        description: `This is a simulated job description for Simulated Job ${jobs?.length || 0 + i}. It requires basic skills and enthusiasm.`,
+        requirements: ['Simulated Skill 1', 'Simulated Skill 2'], // Corrected to string[]
+        isSaved: false,
+        sourceUrl: `https://example.com/simulated-job-${jobs?.length || 0 + i}`,
+      }));
+      // Fix: Use functional update for setJobs
+      setJobs((prevJobs) => [...(prevJobs || []), ...newJobs]);
+      setLoading(false);
+    }, 1000);
+  }, [jobs, setJobs]);
+
+  const isValidUrl = (urlString: string): boolean => {
+    try {
+      const url = new URL(urlString);
+      return url.protocol === 'http:' || url.protocol === 'https:';
+    } catch (e) {
+      return false;
+    }
+  };
+
+  const handleSearch = async () => {
+    if (!searchQuery && !locationQuery && !isManualInputMode) {
+      setError('Please enter a search query and/or location, or switch to manual input mode.');
+      return;
+    }
+
+    setError(null);
+    setLoading(true);
+    setSelectedJob(null); // Clear selected job on new search
+    setJobs([]); // Clear previous jobs
+    setShowCompanyInsights(false);
+
+    let jobData: Record<string, any> | null = null;
+    let newGroundingDetails: GroundingDetail[] = [];
+    let jobDescriptionText = '';
+
+    if (isManualInputMode) {
+      if (!jobDescriptionInput) {
+        setError('Please enter job description text in manual input mode.');
+        setLoading(false);
+        return;
+      }
+      jobDescriptionText = jobDescriptionInput;
+      jobData = await analyzeJobText(jobDescriptionInput);
+    } else {
+      // Prioritize URL if it looks like one, otherwise treat as text search
+      if (searchQuery.startsWith('http://') || searchQuery.startsWith('https://')) {
+        try {
+          // Use analyzeJobUrl for direct URL analysis
+          const result = await analyzeJobUrl(searchQuery);
+          jobData = result;
+          if (jobData?.groundingMetadata?.groundingChunks) {
+            newGroundingDetails = jobData.groundingMetadata.groundingChunks;
+          }
+          jobDescriptionText = jobData?.description || '';
+        } catch (urlError) {
+          console.error('Error analyzing URL directly, falling back to text search:', urlError);
+          // Fallback to text search if URL analysis fails
+          jobData = await analyzeJobText(`${searchQuery} ${locationQuery}`);
+          if (jobData) jobDescriptionText = jobData.description || '';
+        }
+      } else {
+        // Use Gemini to find jobs based on text query and location
+        jobDescriptionText = `Searching for "${searchQuery}" in "${locationQuery}". This is a dynamically generated job description based on your query. We are looking for talented individuals to join our team.`;
+        jobData = await analyzeJobText(jobDescriptionText);
+      }
+    }
+
+    if (jobData) {
+      const companyInsights = await getCompanyInsights(jobData.company || 'Unknown Company');
+
+      const newJob: Job = {
+        id: jobData.id || `job-${Date.now()}`,
+        title: jobData.title || searchQuery || 'N/A',
+        company: jobData.company || 'N/A',
+        location: jobData.location || locationQuery || 'N/A',
+        description: jobData.description || jobDescriptionText,
+        requirements: jobData.requirements || [], // Ensure this is an array
+        niceToHave: jobData.niceToHave || [],     // Ensure this is an array
+        sourceUrl: jobData.sourceUrl || newGroundingDetails.find(gd => gd.uri && isValidUrl(gd.uri) && !isAvoidedDomain(gd.uri))?.uri || '#',
+        originalPostText: jobDescriptionText,
+        isSaved: (savedJobs || []).some(job => job.id === jobData.id), // Check against actual savedJobs
+        groundingDetails: newGroundingDetails,
+        companyInsights: companyInsights || undefined,
+      };
+      setJobs([newJob]);
+      setSelectedJob(newJob);
+
+      // Add keywords
+      if (searchQuery) {
+        addFrequentlySearchedKeyword(searchQuery);
+      }
+      if (locationQuery) {
+        addFrequentlySearchedKeyword(locationQuery);
+      }
+    } else {
+      setError('Could not extract complete job details. Please provide more context or try another input.');
+    }
+    setLoading(false);
+  };
+
+  const handleToggleSaveJob = (jobToSave: Job) => {
+    const isJobSaved = (savedJobs || []).some(job => job.id === jobToSave.id);
+    if (isJobSaved) {
+      removeSavedJob(jobToSave.id);
+      // Update the local `jobs` state to reflect the change
+      // Fix: Use functional update for setJobs
+      setJobs(prevJobs => (prevJobs || []).map(job =>
+        job.id === jobToSave.id ? { ...job, isSaved: false } : job
+      ));
+      // Update selectedJob if it's the one being toggled
+      if (selectedJob?.id === jobToSave.id) {
+        setSelectedJob(prev => prev ? { ...prev, isSaved: false } : null);
+      }
+    } else {
+      saveJob(jobToSave);
+      // Update the local `jobs` state to reflect the change
+      // Fix: Use functional update for setJobs
+      setJobs(prevJobs => (prevJobs || []).map(job =>
+        job.id === jobToSave.id ? { ...job, isSaved: true } : job
+      ));
+      // Update selectedJob if it's the one being toggled
+      if (selectedJob?.id === jobToSave.id) {
+        setSelectedJob(prev => prev ? { ...prev, isSaved: true } : null);
+      }
+    }
+  };
+
+  const renderGroundingLinks = (groundingDetails?: GroundingDetail[], sourceUrl?: string) => {
+    const uniqueLinks = new Map<string, { uri: string, title?: string }>();
+
+    // Add sourceUrl first if valid and not avoided
+    if (sourceUrl && isValidUrl(sourceUrl) && !isAvoidedDomain(sourceUrl)) {
+      const normalizedUri = new URL(sourceUrl).hostname.toLowerCase().replace(/\/+$/, '');
+      uniqueLinks.set(normalizedUri, { uri: sourceUrl, title: new URL(sourceUrl).hostname });
+    }
+
+    groundingDetails?.forEach(detail => {
+      if (detail.uri && isValidUrl(detail.uri) && !isAvoidedDomain(detail.uri)) {
+        try {
+          const url = new URL(detail.uri);
+          const hostname = url.hostname.toLowerCase().replace(/\/+$/, '');
+          // Only add if not already present or if it's a "better" title
+          if (!uniqueLinks.has(hostname) || (detail.title && (uniqueLinks.get(hostname)?.title === hostname || uniqueLinks.get(hostname)?.title === undefined))) {
+            uniqueLinks.set(hostname, { uri: detail.uri, title: detail.title || hostname });
+          }
+        } catch (e) {
+          console.warn("Invalid grounding URI encountered:", detail.uri, e);
+        }
+      }
+    });
+
+    const links = Array.from(uniqueLinks.values());
+
+    if (links.length === 0) {
+      return <span className="text-gray-500 italic">No valid sources found.</span>;
+    }
 
     return (
-      <div className="mt-4 pt-4 border-t dark:border-gray-700">
-        <h4 className="font-bold text-lg mb-2">Sources:</h4>
-        <ul className="list-disc list-inside text-sm text-blue-600 dark:text-blue-400">
-          {Array.from(uniqueLinks.values()).map((link, index) => (
-            <li key={index}>
-              <a href={link.uri} target="_blank" rel="noopener noreferrer" className="hover:underline">
-                {link.title || link.uri}
-              </a>
-            </li>
-          ))}
-        </ul>
+      <div className="flex flex-wrap gap-2 mt-2">
+        {links.map((link, index) => (
+          <a
+            key={index}
+            href={link.uri}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="text-blue-500 hover:underline text-sm bg-blue-50 dark:bg-gray-700 px-2 py-1 rounded-full flex items-center"
+          >
+            <PaperAirplaneIcon className="h-4 w-4 mr-1" />
+            {link.title || new URL(link.uri).hostname}
+          </a>
+        ))}
       </div>
     );
   };
 
-  const renderJobDetails = (job: Job) => (
-    <div className="p-6 h-full flex flex-col animate-fade-in">
-      <div className="flex justify-between items-start">
-        <div>
-          <h3 className="text-2xl font-bold">{job.title}</h3>
-          <p className="text-lg font-semibold text-blue-600 dark:text-blue-400">{job.company}</p>
-          <div className="mt-2 space-y-1 text-sm text-gray-500 dark:text-gray-400">
-            <p className="flex items-center gap-2"><LocationMarkerIcon className="w-4 h-4" /> {job.location || 'Not Specified'}</p>
-            <p className="flex items-center gap-2"><BriefcaseIcon className="w-4 h-4" /> {job.workModel || 'Not Specified'}</p>
-            <p className="flex items-center gap-2"><CalendarIcon className="w-4 h-4" /> {job.datePosted || 'Not Available'}</p>
+  const renderJobDetails = () => {
+    if (!selectedJob) return null;
+
+    const isJobSaved = (savedJobs || []).some(job => job.id === selectedJob.id);
+
+    return (
+      <div className="bg-white dark:bg-gray-800 p-6 rounded-lg shadow-xl mt-6 border border-gray-200 dark:border-gray-700">
+        <div className="flex justify-between items-start mb-4">
+          <div>
+            <h2 className="text-3xl font-bold text-gray-900 dark:text-white mb-1">{selectedJob.title}</h2>
+            <h3 className="text-xl text-blue-600 dark:text-blue-400 mb-2">{selectedJob.company} - {selectedJob.location}</h3>
           </div>
+          <button
+            onClick={() => handleToggleSaveJob(selectedJob)}
+            className={`p-2 rounded-full transition-colors duration-200
+              ${isJobSaved
+                ? 'bg-blue-500 text-white hover:bg-blue-600'
+                : 'bg-gray-200 text-gray-700 hover:bg-gray-300 dark:bg-gray-700 dark:text-gray-200 dark:hover:bg-gray-600'
+              }`}
+            aria-label={isJobSaved ? 'Unsave Job' : 'Save Job'}
+          >
+            {isJobSaved ? <BookmarkSolidIcon className="h-6 w-6" /> : <BookmarkOutlineIcon className="h-6 w-6" />}
+          </button>
         </div>
-        <button onClick={() => handleToggleSaveJob(job)} title="Save Job" className="p-2 rounded-full hover:bg-gray-200 dark:hover:bg-gray-700">
-          <BookmarkIcon className="w-6 h-6" filled={savedJobs.some(j => j.id === job.id)} />
-        </button>
-      </div>
 
-      <div className="mt-6 flex gap-3">
-        {job.sourceUrl && (
-            <a href={job.sourceUrl} target="_blank" rel="noopener noreferrer" className="flex-1 text-center bg-gray-600 hover:bg-gray-700 text-white font-bold py-3 px-4 rounded-lg">
-                View Original Post
-            </a>
+        <div className="mb-4">
+          <h4 className="text-lg font-semibold text-gray-800 dark:text-gray-100">Sources:</h4>
+          {renderGroundingLinks(selectedJob.groundingDetails, selectedJob.sourceUrl)}
+        </div>
+
+        <h4 className="text-lg font-semibold text-gray-800 dark:text-gray-100 mb-2">Job Description:</h4>
+        <div className="prose dark:prose-invert max-w-none text-gray-700 dark:text-gray-300">
+          <MarkdownRenderer>{selectedJob.description}</MarkdownRenderer>
+        </div>
+
+        {selectedJob.requirements && selectedJob.requirements.length > 0 && (
+          <div className="mt-4">
+            <h4 className="text-lg font-semibold text-gray-800 dark:text-gray-100">Requirements:</h4>
+            <ul className="list-disc list-inside text-gray-700 dark:text-gray-300">
+              {selectedJob.requirements.map((req, index) => (
+                <li key={index}>{req}</li>
+              ))}
+            </ul>
+          </div>
         )}
-        <button onClick={() => handleApply(job)} className="flex-1 bg-blue-600 hover:bg-blue-700 text-white font-bold py-3 px-4 rounded-lg">
-          Generate Application
-        </button>
-      </div>
 
-      <div className="mt-6 flex-grow overflow-y-auto pr-2">
-        <h4 className="font-bold text-lg mb-2">Job Description</h4>
-        <div className="prose prose-sm dark:prose-invert max-w-none">
-            {formattedMarkdown(job.description)}
-        </div>
-        {renderGroundingLinks(job.grounding)}
+        {selectedJob.niceToHave && selectedJob.niceToHave.length > 0 && (
+          <div className="mt-4">
+            <h4 className="text-lg font-semibold text-gray-800 dark:text-gray-100">Nice-to-Have:</h4>
+            <ul className="list-disc list-inside text-gray-700 dark:text-gray-300">
+              {selectedJob.niceToHave.map((nice, index) => (
+                <li key={index}>{nice}</li>
+              ))}
+            </ul>
+          </div>
+        )}
 
-        {/* Company Insights Display */}
-        <CompanyInsightsDisplay 
-            companyName={job.company} 
-            jobId={job.id} 
-            currentInsights={job.companyInsights}
-            onInsightsFetched={(companyInsights) => {
-              // Update the specific job in the `jobs` array
-              setJobs(prevJobs => prevJobs.map(j => 
-                j.id === job.id ? { ...j, companyInsights: companyInsights } : j
-              ));
-              // Also update the selected job in context if it's the same one
-              setSelectedJobForViewing(prevSelected => 
-                prevSelected?.id === job.id ? { ...prevSelected, companyInsights: companyInsights } : prevSelected
-              );
-            }}
-        />
+        {selectedJob.companyInsights && (
+          <CompanyInsightsDisplay companyInsights={selectedJob.companyInsights} />
+        )}
+
       </div>
-    </div>
-  );
+    );
+  };
 
   return (
-    <div className="max-w-7xl mx-auto">
-      <h2 className="text-3xl font-bold text-gray-800 dark:text-white">Find Your Next Job</h2>
-      <p className="mt-2 text-lg text-gray-600 dark:text-gray-400">Search for roles tailored to your profile.</p>
+    <div className="job-finder-section bg-white dark:bg-gray-900 p-6 rounded-lg shadow-md border border-gray-200 dark:border-gray-700 min-h-[70vh]">
+      <h2 className="text-3xl font-extrabold text-gray-900 dark:text-white mb-6 text-center">Find Your Next Opportunity</h2>
 
-      <div className="mt-6 p-4 bg-gray-50 dark:bg-gray-800 rounded-lg relative"> {/* Added relative for positioning dropdown */}
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-          <div className="relative"> {/* Wrapper for query input and suggestions */}
-            <input
-              ref={searchInputRef}
-              name="query"
-              value={filters.query}
-              onChange={handleFilterChange}
-              onFocus={() => filters.query.trim().length > 0 && filteredSuggestions.length > 0 && setShowSuggestions(true)} // Show on focus if input has value and suggestions exist
-              onBlur={() => setTimeout(() => setShowSuggestions(false), 100)} // Hide after a small delay to allow click on suggestion
-              placeholder="Keywords (e.g., 'React Developer')"
-              className="w-full p-3 border rounded-lg bg-white dark:bg-gray-700"
-              aria-label="Job search keywords"
-            />
-            {showSuggestions && filteredSuggestions.length > 0 && (
-              <ul className="absolute z-10 w-full bg-white dark:bg-gray-700 border border-gray-300 dark:border-gray-600 rounded-b-lg shadow-lg max-h-48 overflow-y-auto">
-                {filteredSuggestions.map((suggestion, index) => (
-                  <li
-                    key={index}
-                    onMouseDown={(e) => { // Changed to onMouseDown
-                      e.preventDefault(); // Prevent input blur from happening immediately
-                      handleSelectSuggestion(suggestion);
-                    }}
-                    className="p-3 cursor-pointer hover:bg-gray-100 dark:hover:bg-gray-600 text-gray-900 dark:text-gray-100"
-                  >
-                    {suggestion}
-                  </li>
-                ))}
-              </ul>
-            )}
-          </div>
-          <input name="location" value={filters.location} onChange={handleFilterChange} placeholder="Location (e.g., 'San Francisco')" className="p-3 border rounded-lg bg-white dark:bg-gray-700" aria-label="Job location" />
-          <select name="workModel" value={filters.workModel} onChange={handleFilterChange} className="p-3 border rounded-lg bg-white dark:bg-gray-700" aria-label="Work model">
-              <option value="Any">Any Work Model</option>
-              <option>Remote</option>
-              <option>Hybrid</option>
-              <option>On-site</option>
-          </select>
-        </div>
-        <div className="mt-4 flex items-center justify-between">
-            <button onClick={() => setShowAdvanced(!showAdvanced)} className="text-sm font-semibold text-blue-600" aria-expanded={showAdvanced} aria-controls="advanced-filters">
-                {showAdvanced ? 'Hide' : 'Show'} Advanced Filters
-            </button>
-        </div>
-        {showAdvanced && (
-            <div id="advanced-filters" className="mt-4 grid grid-cols-1 md:grid-cols-3 gap-4 animate-fade-in">
-                <select name="experienceLevel" value={filters.experienceLevel} onChange={handleFilterChange} className="p-3 border rounded-lg bg-white dark:bg-gray-700" aria-label="Experience level">
-                    <option value="Any">Any Experience Level</option>
-                    <option>Entry-Level</option>
-                    <option>Mid-Level</option>
-                    <option>Senior</option>
-                </select>
-                <input type="number" name="minSalary" value={filters.minSalary} onChange={handleFilterChange} placeholder="Minimum Salary (e.g., 80000)" className="p-3 border rounded-lg bg-white dark:bg-gray-700" aria-label="Minimum salary" />
-                <input name="skills" value={filters.skills} onChange={handleFilterChange} placeholder="Required Skills (e.g., Python, SQL)" className="p-3 border rounded-lg bg-white dark:bg-gray-700" aria-label="Required skills" />
-            </div>
-        )}
-        <div className="mt-4 flex justify-end gap-2">
-            <button onClick={() => { setFilters(initialFilters); }} className="bg-gray-500 hover:bg-gray-600 text-white font-bold py-3 px-6 rounded-lg">Clear</button>
-            <button onClick={handleSearch} disabled={loading} className="bg-blue-600 hover:bg-blue-700 text-white font-bold py-3 px-6 rounded-lg disabled:opacity-50">
-              {loading ? <LoadingSpinner className="w-6 h-6" /> : 'Search'}
-            </button>
-        </div>
+      {/* Toggle between URL/Text input modes */}
+      <div className="flex justify-center mb-6">
+        <button
+          onClick={() => setIsManualInputMode(false)}
+          className={`px-5 py-2 rounded-l-lg text-lg font-medium transition-colors duration-200
+            ${!isManualInputMode
+              ? 'bg-blue-600 text-white shadow-md'
+              : 'bg-gray-200 text-gray-700 hover:bg-gray-300 dark:bg-gray-700 dark:text-gray-200 dark:hover:bg-gray-600'
+            }`}
+        >
+          Search/URL Input
+        </button>
+        <button
+          onClick={() => setIsManualInputMode(true)}
+          className={`px-5 py-2 rounded-r-lg text-lg font-medium transition-colors duration-200
+            ${isManualInputMode
+              ? 'bg-blue-600 text-white shadow-md'
+              : 'bg-gray-200 text-gray-700 hover:bg-gray-300 dark:bg-gray-700 dark:text-gray-200 dark:hover:bg-gray-600'
+            }`}
+        >
+          Manual Job Description
+        </button>
       </div>
-      
-      {currentError && <p className="text-red-500 mt-4 text-center">{currentError}</p>} {/* Display local error */}
-      {!defaultResume && jobs.length === 0 && <p className="text-yellow-600 mt-4 text-center">Tip: Add a default resume in the 'Resume Hub' for better search results.</p>}
 
-      <div className="mt-8 grid grid-cols-1 md:grid-cols-3 gap-8" style={{ minHeight: '60vh' }}>
-        <div className="md:col-span-1 bg-white dark:bg-gray-800 p-4 rounded-xl shadow-lg h-full overflow-y-auto">
-          {loading && <div className="flex justify-center items-center h-full"><LoadingSpinner className="w-8 h-8" /></div>}
-          {!loading && jobs.length === 0 && <p className="text-center text-gray-500 pt-4">No jobs found. Try a different search.</p>}
-          {!loading && jobs.length > 0 && (
-            <button
-                onClick={handleSaveAllDisplayedJobs}
-                className="w-full mb-4 bg-green-600 hover:bg-green-700 text-white font-bold py-2 px-4 rounded-lg"
-            >
-                Save All Displayed Jobs
-            </button>
+      {isManualInputMode ? (
+        <div className="mb-6">
+          <label htmlFor="jobDescriptionInput" className="block text-lg font-medium text-gray-700 dark:text-gray-200 mb-2">
+            Paste Job Description:
+          </label>
+          <textarea
+            id="jobDescriptionInput"
+            className="w-full p-3 border border-gray-300 dark:border-gray-600 rounded-lg shadow-sm focus:ring-blue-500 focus:border-blue-500 bg-gray-50 dark:bg-gray-700 dark:text-white resize-y min-h-[200px]"
+            rows={10}
+            value={jobDescriptionInput}
+            onChange={(e) => setJobDescriptionInput(e.target.value)}
+            placeholder="Paste the full job description here..."
+          ></textarea>
+        </div>
+      ) : (
+        <div className="job-search-filters grid grid-cols-1 md:grid-cols-3 gap-4 mb-6">
+          <input
+            type="text"
+            className="col-span-1 md:col-span-2 p-3 border border-gray-300 dark:border-gray-600 rounded-lg shadow-sm focus:ring-blue-500 focus:border-blue-500 bg-gray-50 dark:bg-gray-700 dark:text-white"
+            placeholder="Job title, keywords, or job URL..."
+            value={searchQuery}
+            onChange={(e) => setSearchQuery(e.target.value)}
+            onKeyDown={(e) => e.key === 'Enter' && handleSearch()}
+          />
+          <input
+            type="text"
+            className="p-3 border border-gray-300 dark:border-gray-600 rounded-lg shadow-sm focus:ring-blue-500 focus:border-blue-500 bg-gray-50 dark:bg-gray-700 dark:text-white"
+            placeholder="Location (e.g., Remote, Toronto, CA)"
+            value={locationQuery}
+            onChange={(e) => setLocationQuery(e.target.value)}
+            onKeyDown={(e) => e.key === 'Enter' && handleSearch()}
+          />
+        </div>
+      )}
+
+
+      <div className="flex justify-center mb-6">
+        <button
+          onClick={handleSearch}
+          className="bg-blue-600 hover:bg-blue-700 text-white font-bold py-3 px-8 rounded-lg shadow-lg flex items-center transition-colors duration-200"
+          disabled={loading}
+        >
+          {loading ? (
+            <svg className="animate-spin h-5 w-5 mr-3 text-white" viewBox="0 0 24 24">
+              <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
+              <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+            </svg>
+          ) : (
+            <MagnifyingGlassIcon className="h-5 w-5 mr-3" />
           )}
-          <ul className="space-y-2">
-            {jobs.map(job => (
-              <li key={job.id} 
-                className={`p-4 rounded-lg cursor-pointer transition-colors border-2 ${selectedJob?.id === job.id ? 'bg-blue-100 dark:bg-blue-900/50 border-blue-500' : 'bg-gray-50 dark:bg-gray-700/50 border-transparent hover:border-blue-400'}`}>
-                <div className="flex justify-between items-start" onClick={() => setSelectedJobForViewing(job)}>
-                    <div>
-                        <h4 className="font-bold">{job.title}</h4>
-                        <p className="text-sm text-gray-600 dark:text-gray-400">{job.company}</p>
-                        <div className="text-xs text-gray-500 dark:text-gray-500 mt-1 flex items-center justify-between">
-                          <span className="flex items-center gap-1"><LocationMarkerIcon className="w-3 h-3"/>{job.location}</span>
-                          {job.workModel && <span className="flex items-center gap-1"><BriefcaseIcon className="w-3 h-3"/>{job.workModel}</span>}
-                        </div>
-                        {/* Display the full description */}
-                        {job.description && (
-                          <p className="text-sm text-gray-700 dark:text-gray-300 mt-2 line-clamp-6">
-                            {job.description}
-                          </p>
-                        )}
-                        {job.datePosted && <p className="text-xs text-gray-500 dark:text-gray-500 mt-1">{job.datePosted}</p>}
+          {isManualInputMode ? 'Analyze Job' : 'Search Jobs'}
+        </button>
+      </div>
 
-                    </div>
-                    <button onClick={(e) => { e.stopPropagation(); handleToggleSaveJob(job); }} title="Save Job" className="p-1 rounded-full hover:bg-gray-200 dark:hover:bg-gray-700">
-                        <BookmarkIcon className="w-5 h-5" filled={savedJobs.some(j => j.id === job.id)} />
-                    </button>
+      {error && (
+        <div className="bg-red-100 dark:bg-red-900 border border-red-400 text-red-700 dark:text-red-300 px-4 py-3 rounded-md relative mb-6 flex items-center">
+          <XMarkIcon className="h-5 w-5 mr-2" />
+          <span className="block sm:inline">{error}</span>
+        </div>
+      )}
+
+      {/* Frequently Searched Keywords */}
+      {(frequentlySearchedKeywords?.length || 0) > 0 && (
+        <div className="mb-6">
+          <button
+            onClick={() => setShowKeywords(!showKeywords)}
+            className="text-blue-600 dark:text-blue-400 hover:underline text-sm mb-2 focus:outline-none"
+          >
+            {showKeywords ? 'Hide Recent Searches' : 'Show Recent Searches'}
+          </button>
+          {showKeywords && (
+            <div className="flex flex-wrap gap-2 mt-2">
+              {[...(frequentlySearchedKeywords || [])].sort((a, b) => (b?.lastUsed || '').localeCompare(a?.lastUsed || '')).map((keyword) => (
+                <span
+                  key={keyword?.id}
+                  onClick={() => {
+                    setSearchQuery(keyword?.term || '');
+                    setShowKeywords(false); // Hide after selection
+                  }}
+                  className="bg-gray-100 dark:bg-gray-700 text-gray-800 dark:text-gray-200 px-3 py-1 rounded-full text-sm cursor-pointer hover:bg-gray-200 dark:hover:bg-gray-600 transition-colors duration-200"
+                >
+                  {keyword?.term} <XMarkIcon className="h-3 w-3 inline-block ml-1 text-gray-500" />
+                </span>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+
+
+      <div className="job-list-section mt-8">
+        {(jobs?.length || 0) === 0 && !loading && !error && (
+          <p className="text-center text-gray-500 dark:text-gray-400 text-lg">
+            No jobs found. Start by searching or pasting a job description!
+          </p>
+        )}
+
+        {selectedJob && renderJobDetails()}
+
+        {/* If there are multiple jobs (e.g., from future pagination), render a list */}
+        {(jobs?.length || 0) > 0 && !selectedJob && (
+          <ul className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+            {jobs.map((job, index) => (
+              <li
+                key={job.id}
+                ref={index === jobs.length - 1 ? lastJobElementRef : null}
+                className="bg-gray-50 dark:bg-gray-800 p-5 rounded-lg shadow hover:shadow-lg transition-shadow duration-200 border border-gray-200 dark:border-gray-700 cursor-pointer"
+                onClick={() => setSelectedJob(job)}
+              >
+                <h3 className="text-xl font-semibold text-blue-600 dark:text-blue-400 mb-1">{job.title}</h3>
+                <p className="text-gray-800 dark:text-gray-200 mb-2">{job.company} - {job.location}</p>
+                <div className="flex justify-between items-center text-sm text-gray-600 dark:text-gray-400">
+                  <span>{job.postedDate || 'N/A'}</span>
+                  <button
+                    onClick={(e) => {
+                      e.stopPropagation(); // Prevent opening job details
+                      handleToggleSaveJob(job);
+                    }}
+                    className={`p-1 rounded-full transition-colors duration-200
+                      ${job.isSaved
+                        ? 'text-blue-500 hover:text-blue-600'
+                        : 'text-gray-400 hover:text-gray-500 dark:text-gray-500 dark:hover:text-gray-400'
+                      }`}
+                  >
+                    {job.isSaved ? <BookmarkSolidIcon className="h-5 w-5" /> : <BookmarkOutlineIcon className="h-5 w-5" />}
+                  </button>
                 </div>
               </li>
             ))}
           </ul>
-        </div>
-        <div className="md:col-span-2 bg-white dark:bg-gray-800 rounded-xl shadow-lg">
-          {selectedJob ? renderJobDetails(selectedJob) : (
-            <div className="flex justify-center items-center h-full">
-              <p className="text-gray-500 dark:text-gray-400">Select a job to see the details.</p>
-            </div>
-          )}
-        </div>
+        )}
+
+        {loading && (
+          <p className="text-center text-blue-600 dark:text-blue-400 mt-8 text-lg animate-pulse">Loading jobs...</p>
+        )}
       </div>
     </div>
   );
-};
+}
 
 export default JobFinder;

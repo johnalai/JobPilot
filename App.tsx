@@ -1,156 +1,206 @@
-
-import React, { useEffect, useRef, useCallback } from 'react';
+import React, { useEffect, useRef, useState, useCallback } from 'react';
+// Import useAppContext and AppContextType from AppContext.tsx
+import { useAppContext } from './context/AppContext';
 import Header from './components/Header';
 import Dashboard from './components/Dashboard';
-// FIX: Changed import to named export for ResumeHub to align with the error message "Module has no default export".
-import { ResumeHub } from './components/ResumeHub';
+import ResumeHub from './components/ResumeHub';
 import JobFinder from './components/JobFinder';
-import ApplicationGenerator from './components/ApplicationGenerator';
 import MyApplications from './components/MyApplications';
-// FIX: Changed import to named export for InterviewCoach as it is reported to have no default export.
-import { InterviewCoach } from './components/InterviewCoach';
-import ChatBot from './components/ChatBot';
+import ApplicationGenerator from './components/ApplicationGenerator';
+import InterviewCoach from './components/InterviewCoach';
 import SavedJobs from './components/SavedJobs';
-import TaskManager from './components/TaskManager';
-import TailoredDocuments from './components/TailoredDocuments'; // New: Import TailoredDocuments
-import { useAppContext } from './context/AppContext';
+import ChatBot from './components/ChatBot';
+// Replaced intro.js-react with direct usage for better stability
 import introJs from 'intro.js';
+import TailoredDocuments from './components/TailoredDocuments';
+// Fix: Change named import to default import for TaskManager
+import TaskManager from './components/TaskManager';
+import ImageStudio from './components/ImageStudio';
+import VideoStudio from './components/VideoStudio';
 
-const App: React.FC = () => {
-  const { view, isNewUser, setIsNewUser, setView, error } = useAppContext(); // Get global error
-  const introRef = useRef<introJs.IntroJs | null>(null);
+function App() {
+  const {
+    currentView,
+    setCurrentView,
+    introEnabled,
+    setIntroEnabled,
+    loadingState, // Consume the loading state from context
+  } = useAppContext();
 
-  const startTour = useCallback(() => {
-    // If a tour is already active, do nothing to avoid multiple instances
-    if (introRef.current && introRef.current.isActive()) {
-      return;
-    }
-
-    const intro = introJs();
-    introRef.current = intro; // Store intro.js instance
-
-    intro.setOptions({
-      steps: [
-        {
-          element: document.querySelector('[data-step="welcome"]') || undefined,
-          intro: "Welcome to JobPilot AI! Let's take a quick tour to show you around.",
-          position: 'bottom',
-        },
-        {
-          element: document.querySelector('[data-step="resume-hub-nav"]') || undefined,
-          intro: "The Resume Hub is where you manage all your resumes and their versions. You can upload, parse, edit, and set a default resume here.",
-          position: 'bottom',
-        },
-        {
-          element: document.querySelector('[data-step="job-finder-nav"]') || undefined,
-          intro: "Discover new opportunities! Use the Job Finder to search for jobs and apply filters tailored to your preferences.",
-          position: 'bottom',
-        },
-        {
-          element: document.querySelector('[data-step="applications-nav"]') || undefined,
-          intro: "Keep track of all your applications here, from draft to offer. You can update statuses and review generated documents.",
-          position: 'bottom',
-        },
-        {
-          element: document.querySelector('[data-step="tailored-docs-nav"]') || undefined, // New: Tailored Docs step
-          intro: "All your generated, tailored resumes and cover letters are saved and editable here.",
-          position: 'bottom',
-        },
-        {
-          element: document.querySelector('[data-step="dashboard-resumes"]') || undefined,
-          intro: "Your dashboard provides a quick overview. This card shows your resume status and links to the Resume Hub.",
-          position: 'top', // Adjust position for better visibility on dashboard cards
-        },
-        {
-          element: document.querySelector('[data-step="dashboard-applications"]') || undefined,
-          intro: "See your recent application activities and their statuses at a glance.",
-          position: 'top', // Adjust position for better visibility on dashboard cards
-        },
-        {
-          element: document.getElementById('chat-toggle-button') || undefined, // Target the chat button directly
-          intro: "Need help? Our JobBot Assistant is always here to answer your career-related questions.",
-          position: 'left',
-        },
-        {
-          title: "That's it!",
-          intro: "You're ready to supercharge your job search with JobPilot AI. Good luck!",
-        },
-      ],
-      showButtons: true,
-      showStepNumbers: false,
-      exitOnOverlayClick: false,
-      hidePrev: false, // Changed from true to false
-      hideNext: false, // Changed from true to false
-      nextLabel: 'Next &rarr;',
-      prevLabel: '&larr; Back',
-      doneLabel: 'Done',
-      tooltipClass: 'jobpilot-intro-tooltip', // Add custom class for styling
-    });
-
-    intro.oncomplete(() => {
-      setIsNewUser(false);
-      introRef.current = null; // Clear instance on completion
-    });
-
-    intro.onexit(() => {
-      setIsNewUser(false); // Mark as completed even if exited early
-      introRef.current = null; // Clear instance on exit
-    });
-
-    intro.start();
-  }, [setIsNewUser]); // Dependencies for useCallback
+  const [tourEnabled, setTourEnabled] = useState(false);
 
   useEffect(() => {
-    // Only run tour if it's a new user and not already in progress
-    if (isNewUser && !introRef.current) {
-      // Add a small delay to ensure elements are rendered before starting the tour
-      const timeoutId = setTimeout(() => {
-        startTour();
-      }, 500); // 500ms delay
-
-      return () => clearTimeout(timeoutId); // Cleanup timeout on unmount
+    // Only enable tour if introEnabled is true
+    if (introEnabled) {
+      setTourEnabled(true);
     }
-  }, [isNewUser, startTour]); // Dependencies for useEffect
+  }, [introEnabled]);
 
-  const renderView = () => {
-    switch (view) {
-      case 'dashboard':
+  const steps = [
+    {
+      element: '.header-nav-links',
+      intro: 'Welcome to JobPilot AI! This is your main navigation. Click on any item to explore different features.',
+      position: 'right',
+    },
+    {
+      element: '.dashboard-welcome',
+      intro: 'Your dashboard provides a quick overview of your job application process.',
+      position: 'bottom',
+    },
+    {
+      element: '.resume-upload-section',
+      intro: 'In Resume Hub, you can upload and manage your resumes. Our AI can help you optimize them!',
+      position: 'bottom',
+    },
+    {
+      element: '.job-search-filters',
+      intro: 'Find your dream job here! Use these filters to narrow down your search.',
+      position: 'right',
+    },
+    {
+      element: '.job-list-section',
+      intro: 'Browse through job listings. Click on a job to see more details.',
+      position: 'left',
+    },
+    {
+      element: '.saved-jobs-section',
+      intro: 'Keep track of jobs you\'re interested in. You can apply for them later or tailor your documents.',
+      position: 'bottom',
+    },
+    {
+      element: '.applications-section',
+      intro: 'Manage all your job applications in one place. Update their status and track your progress.',
+      position: 'bottom',
+    },
+    {
+      element: '.tailored-documents-section',
+      intro: 'Generate AI-powered tailored resumes and cover letters for specific jobs.',
+      position: 'bottom',
+    },
+    {
+      element: '.task-manager-section',
+      intro: 'Organize your application tasks and deadlines effectively.',
+      position: 'bottom',
+    },
+    {
+      element: '.interview-coach-section',
+      intro: 'Practice your interview skills with our AI coach and get personalized feedback.',
+      position: 'bottom',
+    },
+    {
+      element: '.chatbot-section',
+      intro: 'Need help or have questions? Our AI chatbot is here to assist you with anything job-related!',
+      position: 'left',
+    },
+    {
+      element: '.image-studio-section',
+      intro: 'Experiment with AI image generation and editing in the Image Studio.',
+      position: 'bottom',
+    },
+    {
+      element: '.video-studio-section',
+      intro: 'Generate and edit videos with AI in the Video Studio.',
+      position: 'bottom',
+    },
+    {
+      element: '.header-user-menu',
+      intro: 'Access user settings or logout from here.',
+      position: 'left',
+    },
+    {
+      element: 'body',
+      intro: 'That\'s the quick tour! You can always restart it from the settings. Good luck with your job search!',
+      position: 'center',
+    },
+  ];
+
+  // Initialize and start tour when tourEnabled becomes true
+  useEffect(() => {
+    if (tourEnabled) {
+      const intro = introJs();
+      intro.setOptions({
+        steps: steps,
+        exitOnOverlayClick: false,
+        disableInteraction: false,
+        showStepNumbers: true,
+        showBullets: false,
+        nextLabel: 'Next >',
+        prevLabel: '< Back',
+        doneLabel: 'Finish',
+      });
+
+      const handleExit = () => {
+        setTourEnabled(false);
+        setIntroEnabled(false);
+      };
+
+      intro.onexit(handleExit);
+      intro.oncomplete(handleExit);
+
+      // Small timeout to ensure elements are rendered
+      const timer = setTimeout(() => {
+        try {
+          intro.start();
+        } catch (e) {
+          console.warn('Intro.js failed to start:', e);
+          handleExit();
+        }
+      }, 100);
+
+      return () => {
+        clearTimeout(timer);
+        intro.exit(true); // Ensure tour is cleaned up
+      };
+    }
+  }, [tourEnabled, steps, setIntroEnabled]);
+
+  const renderView = useCallback(() => {
+    switch (currentView) {
+      case 'Dashboard':
         return <Dashboard />;
-      case 'resume-hub':
+      case 'Resume Hub':
         return <ResumeHub />;
-      case 'job-finder':
+      case 'Find Jobs':
         return <JobFinder />;
-      case 'application-generator':
-        return <ApplicationGenerator />;
-      case 'applications':
-        return <MyApplications />;
-      case 'interview-coach':
-        return <InterviewCoach />;
-      case 'saved-jobs':
+      case 'Saved Jobs':
         return <SavedJobs />;
-      case 'task-manager':
-        return <TaskManager />;
-      case 'tailored-docs': // New view for tailored documents
+      case 'My Applications':
+        return <MyApplications />;
+      case 'Tailored Docs':
         return <TailoredDocuments />;
+      case 'Application Generator': // This view is typically accessed via "My Applications"
+        return <ApplicationGenerator />;
+      case 'TaskManager':
+        return <TaskManager />;
+      case 'Interview Coach':
+        return <InterviewCoach />;
+      case 'ChatBot':
+        return <ChatBot />;
+      case 'Image Studio':
+        return <ImageStudio />;
+      case 'Video Studio':
+        return <VideoStudio />;
       default:
         return <Dashboard />;
     }
-  };
+  }, [currentView]);
+
+  // CRITICAL FIX: Do not render the main app UI until the loading state is 'loaded'.
+  // This prevents any component from accessing context data before it's ready.
+  if (loadingState !== 'loaded') {
+    // The loading/error UI is handled by AppProvider, so we render nothing here
+    // to prevent any component from attempting to render and crash.
+    return null;
+  }
 
   return (
-    <div className="min-h-screen bg-gray-50 dark:bg-gray-900 text-gray-900 dark:text-gray-100 font-sans">
-      <Header startTour={startTour} />
-      <main className="max-w-7xl mx-auto py-8 px-4 sm:px-6 lg:px-8">
+    <div className="min-h-screen bg-gradient-to-br from-gray-50 to-white text-gray-900 dark:from-gray-900 dark:to-black dark:text-white transition-colors duration-300">
+      <Header />
+      <main className="container mx-auto px-4 py-8">
         {renderView()}
       </main>
-      <ChatBot />
-      {error && (
-        <p className="fixed bottom-4 left-1/2 -translate-x-1/2 bg-red-600 text-white py-2 px-4 rounded-lg shadow-lg z-50 animate-fade-in-up">
-          {error}
-        </p>
-      )}
     </div>
   );
-};
+}
 
 export default App;

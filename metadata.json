@@ -1,8 +1,7 @@
 {
-  "name": "JobPilot AI",
-  "description": "A next-generation job application platform that empowers users to effortlessly manage, optimize, and deploy tailored, ATS-compliant resumes and cover letters—while intelligently matching them to high-potential opportunities aligned with their background.",
   "requestFramePermissions": [
-    "microphone",
-    "geolocation"
-  ]
+    "microphone"
+  ],
+  "name": "JobPilot AI",
+  "description": ""
 }

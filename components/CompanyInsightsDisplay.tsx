@@ -1,136 +1,120 @@
-import React, { useState, useEffect, useCallback } from 'react';
-import { CompanyInsights, Job } from '../types';
-import { getCompanyInsights } from '../services/geminiService';
-import { LoadingSpinner } from './icons';
-import { useAppContext } from '../context/AppContext';
+
+import React from 'react';
+import { CompanyInsights } from '../types';
+import { LinkIcon, BuildingOfficeIcon, GlobeAltIcon, UserGroupIcon, AcademicCapIcon, PlusCircleIcon, MinusCircleIcon } from '@heroicons/react/24/outline';
 
 interface CompanyInsightsDisplayProps {
-  companyName: string;
-  jobId: string; // Unique identifier for the job
-  currentInsights?: CompanyInsights; // Existing insights from the job object
-  onInsightsFetched: (insights: CompanyInsights) => void; // Callback to update the parent Job state
+  companyInsights: CompanyInsights | null;
 }
 
-// Helper to validate if a string is a constructible URL
-const isValidUrl = (urlString: string) => {
-  try {
-    // Check if it's a valid absolute URL with a scheme (http/https)
-    const url = new URL(urlString);
-    return url.protocol === 'http:' || url.protocol === 'https:';
-  } catch (e) {
-    return false;
+function CompanyInsightsDisplay({ companyInsights }: CompanyInsightsDisplayProps) {
+  if (!companyInsights) {
+    return (
+      <div className="mt-6 pt-4 border-t border-gray-200 dark:border-gray-700">
+        <h4 className="text-xl font-bold text-gray-900 dark:text-white mb-2">Company Insights</h4>
+        <p className="text-gray-500 dark:text-gray-400">Could not extract complete company insights. Please provide more context or try another input.</p>
+      </div>
+    );
   }
-};
 
-const CompanyInsightsDisplay: React.FC<CompanyInsightsDisplayProps> = ({
-  companyName,
-  jobId,
-  currentInsights,
-  onInsightsFetched,
-}) => {
-  const { setError: setGlobalError } = useAppContext();
-  const [isLoadingInsights, setIsLoadingInsights] = useState(false);
-  const [insightsError, setInsightsError] = useState<string | null>(null);
-  
-  // Use a local state for insights to manage immediate display,
-  // but rely on `currentInsights` prop for the authoritative source after parent update.
-  const [localInsights, setLocalInsights] = useState<CompanyInsights | undefined>(currentInsights);
-
-
-  const fetchInsights = useCallback(async () => {
-    // Only fetch if no insights are currently available for this job
-    if (companyName && !localInsights) {
-      setIsLoadingInsights(true);
-      setInsightsError(null);
-      try {
-        const fetched = await getCompanyInsights(companyName);
-        if (fetched) {
-          setLocalInsights(fetched); // Update local state for immediate display
-          onInsightsFetched(fetched); // Pass to parent to update the Job object
-        } else {
-          setInsightsError('No insights found for this company.');
-          setLocalInsights(undefined);
-        }
-      } catch (e: any) {
-        setInsightsError(e.message || 'Failed to load company insights.');
-        setLocalInsights(undefined);
-        setGlobalError('Company insights fetching failed: ' + (e.message || 'Unknown error.'));
-      } finally {
-        setIsLoadingInsights(false);
-      }
+  const isValidUrl = (url: string | undefined): boolean => {
+    if (!url) return false;
+    try {
+      new URL(url);
+      return true;
+    } catch (e) {
+      return false;
     }
-  }, [companyName, jobId, localInsights, onInsightsFetched, setGlobalError]); // Added jobId to dependencies for memoization, though it's technically not used in the body, it ensures useCallback updates if job changes.
+  };
 
-  useEffect(() => {
-    // Sync local state with prop, and trigger fetch if needed.
-    // This handles cases where job changes, or if currentInsights initially empty.
-    if (currentInsights !== localInsights) {
-        setLocalInsights(currentInsights);
-    }
-    if (!currentInsights) { // Only fetch if the parent hasn't provided insights yet
-      fetchInsights();
-    }
-  }, [companyName, jobId, currentInsights, localInsights, fetchInsights]);
-
-  if (!companyName) {
-    return null;
-  }
+  const renderLink = (url: string | undefined, IconComponent: React.ElementType, text: string) => {
+    if (!isValidUrl(url)) return null;
+    return (
+      <a href={url} target="_blank" rel="noopener noreferrer" className="text-blue-500 hover:underline flex items-center text-sm mr-4">
+        <IconComponent className="h-4 w-4 mr-1" />
+        {text}
+      </a>
+    );
+  };
 
   return (
-    <div className="mt-8 pt-6 border-t dark:border-gray-700">
-      <h4 className="font-bold text-lg mb-4">Company Insights for {companyName}</h4>
-      {isLoadingInsights ? (
-        <div className="flex justify-center items-center h-24">
-          <LoadingSpinner className="w-6 h-6 text-blue-500" />
-          <p className="ml-2 text-gray-600 dark:text-gray-400">Loading insights...</p>
+    <div className="mt-6 pt-4 border-t border-gray-200 dark:border-gray-700">
+      <h4 className="text-xl font-bold text-gray-900 dark:text-white mb-4 flex items-center">
+        <BuildingOfficeIcon className="h-6 w-6 mr-2 text-blue-600 dark:text-blue-400" />
+        Company Insights: {companyInsights.companyName}
+      </h4>
+
+      <div className="mb-4 flex flex-wrap items-center">
+        {renderLink(companyInsights.website, GlobeAltIcon, 'Website')}
+        {renderLink(companyInsights.linkedinProfile, LinkIcon, 'LinkedIn')}
+        {renderLink(companyInsights.crunchbaseProfile, LinkIcon, 'Crunchbase')}
+        {companyInsights.glassdoorRating && (
+          <span className="text-gray-700 dark:text-gray-300 text-sm flex items-center">
+            <UserGroupIcon className="h-4 w-4 mr-1" />
+            Glassdoor: {companyInsights.glassdoorRating} / 5
+          </span>
+        )}
+      </div>
+
+      {companyInsights.overview && (
+        <div className="mb-4">
+          <h5 className="font-semibold text-gray-800 dark:text-gray-100 flex items-center mb-1">
+            <AcademicCapIcon className="h-5 w-5 mr-2" />
+            Overview
+          </h5>
+          <p className="text-gray-700 dark:text-gray-300">{companyInsights.overview}</p>
         </div>
-      ) : insightsError ? (
-        <p className="text-red-500 text-sm">{insightsError}</p>
-      ) : localInsights ? (
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-4 text-sm text-gray-700 dark:text-gray-300">
-          {localInsights.industry && (
-            <p><span className="font-semibold">Industry:</span> {localInsights.industry}</p>
-          )}
-          {localInsights.size && (
-            <p><span className="font-semibold">Size:</span> {localInsights.size}</p>
-          )}
-          {localInsights.headquarters && (
-            <p><span className="font-semibold">Headquarters:</span> {localInsights.headquarters}</p>
-          )}
-          {localInsights.website && isValidUrl(localInsights.website) && (
-            <p>
-              <span className="font-semibold">Website:</span>{' '}
-              <a href={localInsights.website} target="_blank" rel="noopener noreferrer" className="text-blue-600 hover:underline dark:text-blue-400">
-                {new URL(localInsights.website).hostname}
-              </a>
-            </p>
-          )}
-          {localInsights.glassdoorRating && (
-            <p>
-              <span className="font-semibold">Glassdoor Rating:</span> {localInsights.glassdoorRating}{' '}
-              {localInsights.glassdoorUrl && isValidUrl(localInsights.glassdoorUrl) && (
-                <a href={localInsights.glassdoorUrl} target="_blank" rel="noopener noreferrer" className="text-blue-600 hover:underline dark:text-blue-400">
-                  (View on Glassdoor)
-                </a>
-              )}
-            </p>
-          )}
-          {localInsights.recentNews && localInsights.recentNews.length > 0 && (
-            <div className="md:col-span-2">
-              <p className="font-semibold mb-1">Recent News:</p>
-              <ul className="list-disc list-inside space-y-1">
-                {localInsights.recentNews.map((news, index) => (
-                  <li key={index}>{news}</li>
-                ))}
-              </ul>
-            </div>
-          )}
+      )}
+
+      {companyInsights.culture && (
+        <div className="mb-4">
+          <h5 className="font-semibold text-gray-800 dark:text-gray-100 flex items-center mb-1">
+            <UserGroupIcon className="h-5 w-5 mr-2" />
+            Culture
+          </h5>
+          <p className="text-gray-700 dark:text-gray-300">{companyInsights.culture}</p>
         </div>
-      ) : (
-        <p className="text-gray-500 text-sm">No insights available.</p>
+      )}
+
+      {companyInsights.productsAndServices && (
+        <div className="mb-4">
+          <h5 className="font-semibold text-gray-800 dark:text-gray-100 flex items-center mb-1">
+            <BuildingOfficeIcon className="h-5 w-5 mr-2" />
+            Products & Services
+          </h5>
+          <p className="text-gray-700 dark:text-gray-300">{companyInsights.productsAndServices}</p>
+        </div>
+      )}
+
+      {companyInsights.pros && companyInsights.pros.length > 0 && (
+        <div className="mb-4">
+          <h5 className="font-semibold text-gray-800 dark:text-gray-100 flex items-center mb-1">
+            <PlusCircleIcon className="h-5 w-5 mr-2 text-green-500" />
+            Pros
+          </h5>
+          <ul className="list-disc list-inside text-gray-700 dark:text-gray-300">
+            {companyInsights.pros.map((pro, index) => (
+              <li key={index}>{pro}</li>
+            ))}
+          </ul>
+        </div>
+      )}
+
+      {companyInsights.cons && companyInsights.cons.length > 0 && (
+        <div className="mb-4">
+          <h5 className="font-semibold text-gray-800 dark:text-gray-100 flex items-center mb-1">
+            <MinusCircleIcon className="h-5 w-5 mr-2 text-red-500" />
+            Cons
+          </h5>
+          <ul className="list-disc list-inside text-gray-700 dark:text-gray-300">
+            {companyInsights.cons.map((con, index) => (
+              <li key={index}>{con}</li>
+            ))}
+          </ul>
+        </div>
       )}
     </div>
   );
-};
+}
 
 export default CompanyInsightsDisplay;

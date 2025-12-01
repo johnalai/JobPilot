@@ -1,63 +1,55 @@
-<!DOCTYPE html>
+
+<!doctype html>
 <html lang="en">
-<head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>JobPilot AI</title>
-  <script src="https://cdn.tailwindcss.com"></script>
-  <link href="https://aistudiocdn.com/intro.js@7.2.0/minified/introjs.min.css" rel="stylesheet">
-  <style>
-    /* Custom styles for intro.js tooltips to ensure text visibility */
-    body .introjs-tooltiptext {
-      color: #333 !important; /* Force dark text for light theme */
-    }
-    body.dark .introjs-tooltiptext {
-      color: #eee !important; /* Force light text for dark theme */
-    }
-    body .introjs-tooltip {
-      background-color: #f7f7f7 !important; /* Light background for tooltip in light theme */
-      color: #333 !important; /* Default text color for the tooltip itself */
-    }
-    body.dark .introjs-tooltip {
-      background-color: #333 !important; /* Dark background for tooltip in dark theme */
-      color: #eee !important; /* Default text color for the tooltip itself */
-    }
-    body .introjs-button {
-      /* Basic styling for buttons in intro.js to fit theme */
-      background-color: #2563eb !important; /* blue-600 */
-      color: white !important;
-      border: none !important;
-      padding: 8px 16px !important;
-      border-radius: 6px !important;
-      font-size: 0.875rem !important;
-    }
-    body .introjs-prevbutton {
-      background-color: #6b7280 !important; /* gray-500 */
-    }
-    body .introjs-skipbutton {
-      color: #6b7280 !important; /* gray-500 */
-      background: none !important;
-      text-decoration: underline !important;
-    }
-  </style>
-  <script type="importmap">
+  <head>
+    <meta charset="UTF-8" />
+    <link rel="icon" type="image/svg+xml" href="/vite.svg" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>JobPilot AI</title>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/intro.js/7.2.0/introjs.min.css" />
+    <script type="importmap">
 {
   "imports": {
-    "react": "https://aistudiocdn.com/react@^19.2.0",
-    "react-dom/": "https://aistudiocdn.com/react-dom@^19.2.0/",
-    "react/": "https://aistudiocdn.com/react@^19.2.0/",
-    "@google/genai": "https://aistudiocdn.com/@google/genai@^1.26.0",
-    "docx": "https://aistudiocdn.com/docx@^9.5.1",
-    "intro.js": "https://aistudiocdn.com/intro.js@7.2.0",
-    "pdfjs-dist@^5.4.296": "https://aistudiocdn.com/pdfjs-dist@5.4.296",
-    "mammoth": "https://aistudiocdn.com/mammoth@1.11.0",
-    "pdfjs-dist/": "https://aistudiocdn.com/pdfjs-dist@^5.4.296/"
+    "react": "https://esm.sh/react@18.2.0",
+    "react/jsx-runtime": "https://esm.sh/react@18.2.0/jsx-runtime",
+    "react-dom": "https://esm.sh/react-dom@18.2.0?deps=react@18.2.0",
+    "react-dom/client": "https://esm.sh/react-dom@18.2.0/client?deps=react@18.2.0",
+    "@google/genai": "https://esm.sh/@google/genai",
+    "pdfjs-dist/build/pdf": "https://esm.sh/pdfjs-dist@4.4.168/build/pdf.min.mjs",
+    "pdfjs-dist/build/pdf.worker.min": "https://esm.sh/pdfjs-dist@4.4.168/build/pdf.worker.min.mjs",
+    "@heroicons/react/24/outline": "https://esm.sh/@heroicons/react@2.1.4/24/outline?external=react,react-dom",
+    "@heroicons/react/24/solid": "https://esm.sh/@heroicons/react@2.1.4/24/solid?external=react,react-dom",
+    "intro.js": "https://esm.sh/intro.js@8.3.2",
+    "marked": "https://esm.sh/marked@12.0.2",
+    "file-saver": "https://esm.sh/file-saver@2.0.5",
+    "date-fns": "https://esm.sh/date-fns@3.6.0",
+    "react-dom/": "https://esm.sh/react-dom@18.2.0/",
+    "react/": "https://esm.sh/react@18.2.0/",
+    "@heroicons/react/": "https://esm.sh/@heroicons/react@2.1.4/",
+    "pdfjs-dist/": "https://esm.sh/pdfjs-dist@4.4.168/"
   }
 }
 </script>
-</head>
-<body class="bg-gray-50 dark:bg-gray-900">
-  <div id="root"></div>
-  <script type="module" src="/index.tsx"></script>
-</body>
+    <script src="https://cdn.tailwindcss.com"></script>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script>
+      // Global polyfill for process.env to support libraries that expect a Node.js-like environment
+      // Safely merge to avoid overwriting existing injected env vars (like API_KEY)
+      if (typeof window !== 'undefined') {
+        window.process = window.process || {};
+        window.process.env = window.process.env || {};
+        // Only set NODE_ENV if not already defined
+        if (!window.process.env.NODE_ENV) {
+          window.process.env.NODE_ENV = 'development';
+        }
+        // Ensure globalThis.process also exists for libraries using strict ESM
+        if (typeof globalThis !== 'undefined') {
+          globalThis.process = window.process;
+        }
+      }
+    </script>
+    <script type="module" src="/index.tsx"></script>
+  </body>
 </html>

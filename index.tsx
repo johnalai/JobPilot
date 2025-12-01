@@ -1,20 +1,16 @@
-
 import React from 'react';
-import ReactDOM from 'react-dom/client';
-// FIX: Use relative paths for local modules.
+import { createRoot } from 'react-dom/client';
 import App from './App';
+// Import AppProvider from AppContext.tsx
 import { AppProvider } from './context/AppContext';
+import ErrorBoundary from './components/ErrorBoundary';
 
-const rootElement = document.getElementById('root');
-if (!rootElement) {
-  throw new Error("Could not find root element to mount to");
-}
-
-const root = ReactDOM.createRoot(rootElement);
-root.render(
+createRoot(document.getElementById('root') as HTMLElement).render(
   <React.StrictMode>
-    <AppProvider>
-      <App />
-    </AppProvider>
-  </React.StrictMode>
+    <ErrorBoundary>
+      <AppProvider>
+        <App />
+      </AppProvider>
+    </ErrorBoundary>
+  </React.StrictMode>,
 );

@@ -1,256 +1,155 @@
-import React, { useState, useRef, useEffect } from 'react';
-import { ChatIcon, CloseIcon, SendIcon, LoadingSpinner, TrashIcon, SpeakerIcon } from './icons';
-import { getChatStream } from '../services/geminiService';
-import { GoogleGenAI, GenerateContentResponse, Modality } from '@google/genai';
-import { useAppContext } from '../context/AppContext';
-import { Message } from '../types';
-import { decode, decodeAudioData } from '../utils/audioUtils';
 
-const ChatBot: React.FC = () => {
-  const [isOpen, setIsOpen] = useState(false);
-  const { chatHistory, setChatHistory } = useAppContext();
+import React, { useState, useRef, useEffect, useCallback } from 'react';
+import { getChatResponse } from '../services/geminiService';
+import { PaperAirplaneIcon, SparklesIcon, XMarkIcon } from '@heroicons/react/24/outline';
+import MarkdownRenderer from './MarkdownRenderer';
+
+interface Message {
+  id: string;
+  role: 'user' | 'model';
+  text: string;
+  timestamp: string;
+}
+
+function ChatBot() {
+  const [messages, setMessages] = useState<Message[]>([]);
   const [input, setInput] = useState('');
-  const [isLoading, setIsLoading] = useState(false);
-  const [showClearConfirmation, setShowClearConfirmation] = useState(false);
-  const [isTtsEnabled, setIsTtsEnabled] = useState(false);
-  const [isSpeaking, setIsSpeaking] = useState(false);
-  
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
   const messagesEndRef = useRef<HTMLDivElement>(null);
-  const audioContextRef = useRef<AudioContext | null>(null);
-  const nextStartTimeRef = useRef(0);
-
-  const scrollToBottom = () => {
-    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
-  };
-
-  useEffect(scrollToBottom, [chatHistory]);
 
   useEffect(() => {
-    if (isTtsEnabled && !audioContextRef.current) {
-      audioContextRef.current = new (window.AudioContext || (window as any).webkitAudioContext)({ sampleRate: 24000 });
-    }
-    if (!isTtsEnabled && audioContextRef.current) {
-        audioContextRef.current.close().then(() => {
-            audioContextRef.current = null;
-            nextStartTimeRef.current = 0;
-            setIsSpeaking(false);
-        });
-    }
-    return () => {
-      if (audioContextRef.current && audioContextRef.current.state !== 'closed') {
-        audioContextRef.current.close();
-      }
+    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+  }, [messages]);
+
+  const handleSendMessage = async (e?: React.FormEvent) => {
+    e?.preventDefault();
+    if (!input.trim()) return;
+
+    const newMessage: Message = {
+      id: `user-${Date.now()}`,
+      role: 'user',
+      text: input,
+      timestamp: new Date().toISOString(),
     };
-  }, [isTtsEnabled]);
 
-
-  const handleSend = async () => {
-    if (input.trim() === '') return;
-    const userInput: Message = { id: Date.now(), text: input, sender: 'user' };
-    
-    const history = chatHistory.map(msg => ({
-      role: msg.sender === 'user' ? 'user' : ('model' as 'user' | 'model'),
-      parts: [{ text: msg.text }]
-    }));
-
-    setChatHistory(prev => [...prev, userInput]);
+    setMessages((prevMessages) => [...prevMessages, newMessage]);
     setInput('');
-    setIsLoading(true);
-
-    let botResponse = '';
-    const botMessageId = Date.now() + 1;
+    setLoading(true);
+    setError(null);
 
     try {
-      setChatHistory(prev => [...prev, { id: botMessageId, text: '', sender: 'bot' }]);
-      const stream = await getChatStream(input, history);
-      
-      for await (const chunk of (stream as AsyncGenerator<GenerateContentResponse>)) {
-        botResponse += chunk.text;
-        setChatHistory(prev => prev.map(msg => 
-          msg.id === botMessageId ? { ...msg, text: botResponse } : msg
-        ));
-      }
-
-      if (isTtsEnabled && botResponse.trim()) {
-        setIsSpeaking(true);
-        if (!audioContextRef.current || audioContextRef.current.state === 'closed') {
-            audioContextRef.current = new (window.AudioContext || (window as any).webkitAudioContext)({ sampleRate: 24000 });
-            nextStartTimeRef.current = audioContextRef.current.currentTime;
-        }
-
-        const aiTTS = new GoogleGenAI({ apiKey: process.env.API_KEY! });
-        const ttsResponse = await aiTTS.models.generateContent({
-          model: "gemini-2.5-flash-preview-tts",
-          contents: [{ parts: [{ text: botResponse }] }],
-          config: {
-            responseModalities: [Modality.AUDIO],
-            speechConfig: {
-              voiceConfig: {
-                prebuiltVoiceConfig: { voiceName: 'Kore' },
-              },
-            },
-          },
-        });
-
-        const base64Audio = ttsResponse.candidates?.[0]?.content?.parts?.[0]?.inlineData?.data;
-        if (base64Audio && audioContextRef.current) {
-          const audioBuffer = await decodeAudioData(
-            decode(base64Audio),
-            audioContextRef.current,
-            24000,
-            1,
-          );
-          
-          const source = audioContextRef.current.createBufferSource();
-          source.buffer = audioBuffer;
-          source.connect(audioContextRef.current.destination);
-
-          const currentTime = audioContextRef.current.currentTime;
-          nextStartTimeRef.current = Math.max(nextStartTimeRef.current, currentTime);
-          source.start(nextStartTimeRef.current);
-          nextStartTimeRef.current += audioBuffer.duration;
-
-          source.onended = () => {
-            if (audioContextRef.current && audioContextRef.current.currentTime >= nextStartTimeRef.current - 0.1) {
-                setIsSpeaking(false);
-            }
-          };
-
-        } else {
-            console.error("No audio data received for TTS.");
-            setIsSpeaking(false);
-        }
-      }
-
-    } catch (error) {
-      console.error('Chat error:', error);
-      setChatHistory(prev => [...prev, { id: Date.now() + 1, text: 'Sorry, I encountered an error.', sender: 'bot' }]);
+      // In a real chat, you'd maintain conversation history to send with each prompt.
+      // For this simple chatbot, we send only the latest message.
+      // For more advanced context, you'd send `messages.map(m => ({ role: m.role, parts: [{text: m.text}] }))`
+      // with a `history` config or using `ai.chats.create()`.
+      const responseText = await getChatResponse(input);
+      const modelMessage: Message = {
+        id: `model-${Date.now()}`,
+        role: 'model',
+        text: responseText,
+        timestamp: new Date().toISOString(),
+      };
+      setMessages((prevMessages) => [...prevMessages, modelMessage]);
+    } catch (err) {
+      console.error('Chatbot error:', err);
+      setError('Failed to get a response from the AI. Please try again.');
+      setMessages((prevMessages) => [
+        ...prevMessages,
+        {
+          id: `error-${Date.now()}`,
+          role: 'model',
+          text: 'Error: Could not retrieve a response.',
+          timestamp: new Date().toISOString(),
+        },
+      ]);
     } finally {
-      setIsLoading(false);
-      if (!isTtsEnabled) {
-        setIsSpeaking(false);
-      }
-    }
-  };
-
-  const handleClearHistory = () => {
-    setChatHistory([]);
-    setShowClearConfirmation(false);
-    if (audioContextRef.current && audioContextRef.current.state !== 'closed') {
-      audioContextRef.current.close().then(() => {
-        audioContextRef.current = null;
-        nextStartTimeRef.current = 0;
-        setIsSpeaking(false);
-      });
+      setLoading(false);
     }
   };
 
   return (
-    <>
-      <button
-        id="chat-toggle-button" // Added ID for intro.js targeting
-        onClick={() => setIsOpen(!isOpen)}
-        className="fixed bottom-6 right-6 bg-blue-600 text-white p-4 rounded-full shadow-lg hover:bg-blue-700 transition-transform transform hover:scale-110 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2"
-        aria-label="Toggle Chat"
-      >
-        {isOpen ? <CloseIcon className="w-6 h-6" /> : <ChatIcon className="w-6 h-6" />}
-      </button>
+    <div className="chatbot-section bg-white dark:bg-gray-900 p-6 rounded-lg shadow-md border border-gray-200 dark:border-gray-700 min-h-[70vh] flex flex-col">
+      <h2 className="text-3xl font-extrabold text-gray-900 dark:text-white mb-6 text-center">JobPilot AI Chatbot</h2>
 
-      {isOpen && (
-        <div className="fixed bottom-24 right-6 w-80 h-[28rem] bg-white dark:bg-gray-800 rounded-lg shadow-xl flex flex-col transition-all duration-300 ease-in-out">
-          <header className="bg-blue-600 text-white p-4 rounded-t-lg flex justify-between items-center">
-            <h3 className="font-bold text-lg">JobBot Assistant</h3>
-            <div className="flex items-center gap-2">
-                <button
-                    onClick={() => setIsTtsEnabled(prev => !prev)}
-                    className={`p-1 rounded-full focus:outline-none focus:ring-2 focus:ring-blue-400 ${isTtsEnabled ? 'bg-blue-500' : 'hover:bg-blue-500'}`}
-                    aria-label={isTtsEnabled ? "Turn off Text-to-Speech" : "Turn on Text-to-Speech"}
-                    title={isTtsEnabled ? "Text-to-Speech On" : "Text-to-Speech Off"}
-                >
-                    <SpeakerIcon className={`w-5 h-5 ${isTtsEnabled ? 'text-white' : 'text-blue-200'}`} filled={isTtsEnabled} />
-                </button>
-                <button
-                    onClick={() => setShowClearConfirmation(true)}
-                    className="p-1 rounded-full hover:bg-blue-500 focus:outline-none focus:ring-2 focus:ring-blue-400"
-                    aria-label="Clear Chat History"
-                    title="Clear Chat History"
-                >
-                    <TrashIcon className="w-5 h-5" />
-                </button>
-            </div>
-          </header>
+      {error && (
+        <div className="bg-red-100 dark:bg-red-900 border border-red-400 text-red-700 dark:text-red-300 px-4 py-3 rounded-md relative mb-6 flex items-center">
+          <XMarkIcon className="h-5 w-5 mr-2" />
+          <span className="block sm:inline">{error}</span>
+        </div>
+      )}
 
-          <div className="flex-1 p-4 overflow-y-auto">
-            <div className="space-y-4">
-              {chatHistory.map((msg, index) => (
-                <div key={msg.id} className={`flex ${msg.sender === 'user' ? 'justify-end' : 'justify-start'}`}>
-                  <div
-                    className={`max-w-[75%] p-3 rounded-lg flex flex-col ${
-                      msg.sender === 'user'
-                        ? 'bg-blue-500 text-white items-end'
-                        : 'bg-gray-200 dark:bg-gray-700 text-gray-900 dark:text-gray-100 items-start'
+      {/* Chat Messages Area */}
+      <div className="flex-grow overflow-y-auto p-4 bg-gray-50 dark:bg-gray-800 rounded-lg mb-4 shadow-inner border border-gray-200 dark:border-gray-700">
+        {messages.length === 0 ? (
+          <div className="flex flex-col items-center justify-center h-full text-gray-500 dark:text-gray-400">
+            <SparklesIcon className="h-12 w-12 mb-4 text-blue-400" />
+            <p className="text-lg">Ask me anything about your job search!</p>
+            <p className="text-sm">e.g., "What are common interview questions for a Software Engineer?"</p>
+          </div>
+        ) : (
+          <div className="space-y-4">
+            {messages.map((msg) => (
+              <div
+                key={msg.id}
+                className={`flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}
+              >
+                <div
+                  className={`max-w-[75%] p-3 rounded-lg shadow-sm text-sm
+                    ${msg.role === 'user'
+                      ? 'bg-blue-500 text-white rounded-br-none'
+                      : 'bg-gray-200 text-gray-900 dark:bg-gray-700 dark:text-gray-100 rounded-bl-none'
                     }`}
-                  >
-                    {msg.text ? (
-                      <p className="mb-1 text-left whitespace-pre-wrap">{msg.text}</p>
-                    ) : (
-                      msg.sender === 'bot' && isLoading && (index === chatHistory.length - 1) ? (
-                        <LoadingSpinner className="w-4 h-4 my-1" />
-                      ) : null
-                    )}
-                    <span className={`text-xs mt-1 ${msg.sender === 'user' ? 'text-blue-100' : 'text-gray-500 dark:text-gray-400'}`}>
-                        {new Date(msg.id).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: true })}
-                    </span>
-                  </div>
+                >
+                  <p className="font-semibold mb-1">{msg.role === 'user' ? 'You' : 'JobPilot AI'}</p>
+                  <MarkdownRenderer>{msg.text}</MarkdownRenderer>
+                  <span className="block text-right text-xs opacity-75 mt-1">
+                    {new Date(msg.timestamp).toLocaleTimeString()}
+                  </span>
                 </div>
-              ))}
-              <div ref={messagesEndRef} />
-            </div>
+              </div>
+            ))}
+            {loading && (
+              <div className="flex justify-start">
+                <div className="max-w-[75%] p-3 rounded-lg shadow-sm bg-gray-200 dark:bg-gray-700 text-gray-900 dark:text-gray-100 rounded-bl-none flex items-center">
+                  <SparklesIcon className="h-5 w-5 mr-2 animate-pulse" />
+                  <span>JobPilot AI is thinking...</span>
+                </div>
+              </div>
+            )}
+            <div ref={messagesEndRef} />
           </div>
+        )}
+      </div>
 
-          <div className="p-4 border-t border-gray-200 dark:border-gray-700">
-            <div className="flex items-center space-x-2">
-              <input
-                type="text"
-                value={input}
-                onChange={(e) => setInput(e.target.value)}
-                onKeyDown={(e) => e.key === 'Enter' && !isLoading && !isSpeaking && handleSend()}
-                placeholder="Ask me anything..."
-                className="flex-1 p-2 border border-gray-300 dark:border-gray-600 rounded-lg bg-gray-50 dark:bg-gray-700 focus:ring-2 focus:ring-blue-500"
-                disabled={isLoading || isSpeaking}
-              />
-              <button onClick={handleSend} disabled={isLoading || isSpeaking} className="p-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-50">
-                {isLoading || isSpeaking ? <LoadingSpinner className="w-5 h-5" /> : <SendIcon className="w-5 h-5" />}
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {showClearConfirmation && (
-        <div className="fixed inset-0 bg-black bg-opacity-50 flex justify-center items-center z-50" role="dialog" aria-modal="true" aria-labelledby="clear-chat-title">
-          <div className="bg-white dark:bg-gray-800 rounded-lg shadow-xl p-6 w-full max-w-sm">
-            <h3 id="clear-chat-title" className="text-xl font-semibold mb-4 text-gray-900 dark:text-gray-100">Clear Chat History?</h3>
-            <p className="text-gray-700 dark:text-gray-300 mb-6">Are you sure you want to clear all messages from your chat history? This action cannot be undone.</p>
-            <div className="flex justify-end gap-3">
-              <button
-                onClick={() => setShowClearConfirmation(false)}
-                className="bg-gray-300 dark:bg-gray-700 hover:bg-gray-400 dark:hover:bg-gray-600 text-gray-800 dark:text-gray-200 font-bold py-2 px-4 rounded-lg"
-              >
-                Cancel
-              </button>
-              <button
-                onClick={handleClearHistory}
-                className="bg-red-600 hover:bg-red-700 text-white font-bold py-2 px-4 rounded-lg"
-              >
-                Clear
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
-    </>
+      {/* Input Form */}
+      <form onSubmit={handleSendMessage} className="flex space-x-3">
+        <input
+          type="text"
+          value={input}
+          onChange={(e) => setInput(e.target.value)}
+          placeholder="Type your message..."
+          className="flex-grow p-3 border border-gray-300 dark:border-gray-600 rounded-lg shadow-sm focus:ring-blue-500 focus:border-blue-500 bg-gray-50 dark:bg-gray-700 dark:text-white"
+          disabled={loading}
+        />
+        <button
+          type="submit"
+          className="bg-blue-600 hover:bg-blue-700 text-white font-bold py-3 px-6 rounded-lg shadow-lg flex items-center transition-colors duration-200"
+          disabled={loading}
+        >
+          {loading ? (
+            <svg className="animate-spin h-5 w-5" viewBox="0 0 24 24">
+              <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
+              <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+            </svg>
+          ) : (
+            <PaperAirplaneIcon className="h-5 w-5" />
+          )}
+        </button>
+      </form>
+    </div>
   );
-};
+}
 
 export default ChatBot;

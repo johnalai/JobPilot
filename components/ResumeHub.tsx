@@ -1,639 +1,604 @@
-import React, { useState, useRef, useCallback, useEffect } from 'react';
+
+import React, { useState, useEffect } from 'react';
+// Import useAppContext from AppContext.tsx
 import { useAppContext } from '../context/AppContext';
-import { Resume, ResumeContent, ResumeVersion, Experience, Education } from '../types';
-import { parseResumeText } from '../services/geminiService';
-import { LoadingSpinner, TrashIcon, PencilIcon, CheckSquareIcon } from './icons';
-import { downloadDocxFile } from '../utils/fileUtils';
-
+import { Resume, NormalizedResume, Job, AtsCheck } from '../types';
+import { ArrowUpTrayIcon, DocumentTextIcon, PlusIcon, TrashIcon, PencilSquareIcon, CloudArrowDownIcon, MagnifyingGlassIcon, ChartBarIcon, EyeIcon, ChevronDownIcon, ChevronUpIcon, SparklesIcon } from '@heroicons/react/24/outline';
+// Import CheckCircleIcon from @heroicons/react/24/solid
+import { CheckCircleIcon } from '@heroicons/react/24/solid';
+import { generateId, downloadDocxFile } from '../utils/fileUtils';
+import { parseResumeText, findJobsFromResume, autoFixResume } from '../services/geminiService';
+import MarkdownRenderer from './MarkdownRenderer';
+// @ts-ignore - Import via importmap
 import * as pdfjsLib from 'pdfjs-dist/build/pdf';
-pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://aistudiocdn.com/pdfjs-dist@5.4.296/build/pdf.worker.min.js';
 
+// Configure PDF.js worker
+pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://esm.sh/pdfjs-dist@4.4.168/build/pdf.worker.min.mjs';
 
-// Helper to render basic markdown-like formatting for display
-const formattedMarkdown = (text: string = '') => {
-  return text
-    .replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>') // Bold
-    .replace(/\*(.*?)\*/g, '<em>$1</em>')    // Italic
-    .split('\n')
-    .map((line, index) => {
-      line = line.trim();
-      if (line.startsWith('* ') || line.startsWith('- ')) {
-        return <li key={index} className="ml-4">{line.substring(2)}</li>;
-      }
-      if (line.length > 0) {
-        return <p key={index} className="mb-2" dangerouslySetInnerHTML={{ __html: line }}></p>;
-      }
-      return null;
-    });
+// Helper to safely format dates and prevent crashes from invalid date strings
+const isValidDate = (date: any): boolean => {
+  return date && !isNaN(new Date(date).getTime());
 };
 
-// Helper function to extract text from various file types
-const extractTextFromFile = async (file: File): Promise<string> => {
-  const fileType = file.type;
-  if (fileType === 'application/pdf') {
-    const arrayBuffer = await file.arrayBuffer();
-    const pdf = await pdfjsLib.getDocument({ data: arrayBuffer }).promise;
-    let fullText = '';
-    for (let i = 1; i <= pdf.numPages; i++) {
-      const page = await pdf.getPage(i);
-      const textContent = await page.getTextContent();
-      const pageText = textContent.items.map((item: any) => item.str).join(' ');
-      fullText += pageText + '\n';
+function ResumeHub() {
+  const {
+    resumes,
+    addResume,
+    updateResume,
+    removeResume,
+    currentResume,
+    setCurrentResume,
+    generateEmptyResume,
+    setJobs,
+    jobs,
+    savedJobs,
+    setCurrentView,
+  } = useAppContext();
+
+  const [selectedResumeId, setSelectedResumeId] = useState<string | null>(
+    currentResume?.id || null
+  );
+  const [editingResumeContent, setEditingResumeContent] = useState<string>('');
+  const [isEditing, setIsEditing] = useState(false);
+  const [uploading, setUploading] = useState(false);
+  const [parsing, setParsing] = useState(false);
+  const [isFindingJobs, setIsFindingJobs] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [viewMode, setViewMode] = useState<'preview' | 'edit' | 'history'>('preview');
+  const [expandedHistoryItem, setExpandedHistoryItem] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (currentResume) {
+      setSelectedResumeId(currentResume.id);
+      setEditingResumeContent(currentResume.content);
+    } else if (resumes?.length > 0) {
+      // If no current resume, but resumes exist, select the first one
+      setCurrentResume(resumes[0]);
     }
-    return fullText;
-  } else if (fileType === 'text/plain') {
-    return file.text();
-  } else if (fileType === 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' || fileType === 'application/msword') {
-    return Promise.reject(new Error("DOCX text extraction is not directly supported in the browser. Please manually copy-paste the text or use a TXT/PDF file."));
-  } else {
-    return Promise.reject(new Error("Unsupported file type. Please upload a TXT, PDF, or DOCX file."));
-  }
-};
-
-
-export const ResumeHub: React.FC = () => {
-  const { resumes, setResumes, defaultResumeId, setDefaultResumeId, setError } = useAppContext();
-  const [file, setFile] = useState<File | null>(null);
-  const [resumeText, setResumeText] = useState<string>('');
-  const [isLoading, setIsLoading] = useState(false);
-  const [editingResume, setEditingResume] = useState<Resume | null>(null);
-  const [editingContent, setEditingContent] = useState<ResumeContent | null>(null);
-  const [newVersionName, setNewVersionName] = useState('');
-  const [showConfirmDelete, setShowConfirmDelete] = useState(false);
-  const [resumeToDeleteId, setResumeToDeleteId] = useState<string | null>(null);
-  const [showContactInfoModal, setShowContactInfoModal] = useState(false);
-  const [currentContactInfo, setCurrentContactInfo] = useState<ResumeContent['contactInfo'] | null>(null);
-
-  const fileInputRef = useRef<HTMLInputElement>(null);
-  const jsonFileInputRef = useRef<HTMLInputElement>(null); // New ref for JSON file input
+  }, [currentResume, resumes, setCurrentResume]);
 
 
   useEffect(() => {
-    // When selected resume for editing changes, update editingContent
-    if (editingResume) {
-      setEditingContent(editingResume.activeContent);
-      setResumeText(editingResume.activeContent.rawText); // Also set raw text for display
-    } else {
-      setEditingContent(null);
-      setResumeText('');
-    }
-  }, [editingResume]);
-
-  const handleFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    if (e.target.files && e.target.files.length > 0) {
-      const selectedFile = e.target.files[0];
-      setFile(selectedFile);
-      setIsLoading(true);
-      setError(null); // Clear any previous errors
-
-      try {
-        const text = await extractTextFromFile(selectedFile);
-        setResumeText(text);
-        setError(null); // Clear error if successful
-      } catch (err: any) {
-        setError(err.message || "Error reading/parsing file.");
-        setResumeText('');
-      } finally {
-        setIsLoading(false);
-        // Clear the file input value to allow re-uploading the same file
-        if (fileInputRef.current) {
-            fileInputRef.current.value = '';
-        }
+    if (selectedResumeId) {
+      const resume = resumes?.find(r => r.id === selectedResumeId);
+      if (resume) {
+        setEditingResumeContent(resume.content);
+        setCurrentResume(resume);
       }
+    } else {
+      setEditingResumeContent('');
+      setCurrentResume(null);
+    }
+    setIsEditing(false); // Exit editing mode when selection changes
+    setViewMode('preview'); // Default to preview
+  }, [selectedResumeId, resumes, setCurrentResume]);
+
+  const extractTextFromPdf = async (file: File): Promise<string> => {
+    try {
+      const arrayBuffer = await file.arrayBuffer();
+      const pdf = await pdfjsLib.getDocument({ data: arrayBuffer }).promise;
+      let fullText = '';
+
+      for (let i = 1; i <= pdf.numPages; i++) {
+        const page = await pdf.getPage(i);
+        const textContent = await page.getTextContent();
+        const pageText = textContent.items.map((item: any) => item.str).join(' ');
+        fullText += pageText + '\n\n';
+      }
+      return fullText;
+    } catch (e) {
+      console.error("Error extracting PDF text:", e);
+      throw new Error("Failed to extract text from PDF. Please ensure it is a text-based PDF.");
     }
   };
 
-
-  // New: Handle JSON file upload
-  const handleLoadJson = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    if (e.target.files && e.target.files.length > 0) {
-      const jsonFile = e.target.files[0];
-      setIsLoading(true);
+  const handleFileChange = async (event: React.ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    if (file) {
+      setUploading(true);
       setError(null);
+      
       try {
-        const fileContent = await jsonFile.text();
-        const rawParsedData: Partial<Resume> = JSON.parse(fileContent);
-
-        // Basic validation and normalization for safety
-        if (
-            rawParsedData &&
-            typeof rawParsedData === 'object' &&
-            rawParsedData.activeContent &&
-            typeof rawParsedData.activeContent.rawText === 'string' &&
-            Array.isArray(rawParsedData.activeContent.skills) &&
-            Array.isArray(rawParsedData.activeContent.experience) &&
-            Array.isArray(rawParsedData.activeContent.education) &&
-            rawParsedData.activeContent.contactInfo &&
-            typeof rawParsedData.activeContent.contactInfo.name === 'string'
-        ) {
-            // Apply normalization similar to how AppContext initializes
-            const newResume: Resume = {
-                id: rawParsedData.id || `resume-${Date.now()}`,
-                name: rawParsedData.name || jsonFile.name.replace('.json', '') || `Loaded Resume ${resumes.length + 1}`,
-                activeContent: {
-                    rawText: rawParsedData.activeContent.rawText,
-                    skills: rawParsedData.activeContent.skills.filter((s: any) => typeof s === 'string'),
-                    experience: (rawParsedData.activeContent.experience || []).map((exp: any) => ({
-                        title: typeof exp.title === 'string' ? exp.title : '',
-                        company: typeof exp.company === 'string' ? exp.company : '',
-                        description: typeof exp.description === 'string' ? exp.description : '',
-                    })).filter((exp: any) => exp.title || exp.company || exp.description),
-                    education: (rawParsedData.activeContent.education || []).map((edu: any) => ({
-                        institution: typeof edu.institution === 'string' ? edu.institution : '',
-                        degree: typeof edu.degree === 'string' ? edu.degree : '',
-                    })).filter((edu: any) => edu.institution || edu.degree),
-                    contactInfo: {
-                        name: typeof rawParsedData.activeContent.contactInfo.name === 'string' ? rawParsedData.activeContent.contactInfo.name : '',
-                        address: typeof rawParsedData.activeContent.contactInfo.address === 'string' ? rawParsedData.activeContent.contactInfo.address : '',
-                        phone: typeof rawParsedData.activeContent.contactInfo.phone === 'string' ? rawParsedData.activeContent.contactInfo.phone : '',
-                        email: typeof rawParsedData.activeContent.contactInfo.email === 'string' ? rawParsedData.activeContent.contactInfo.email : '',
-                        linkedin: typeof rawParsedData.activeContent.contactInfo.linkedin === 'string' ? rawParsedData.activeContent.contactInfo.linkedin : undefined,
-                        github: typeof rawParsedData.activeContent.contactInfo.github === 'string' ? rawParsedData.activeContent.contactInfo.github : undefined,
-                        portfolio: typeof rawParsedData.activeContent.contactInfo.portfolio === 'string' ? rawParsedData.activeContent.contactInfo.portfolio : undefined,
-                    },
-                },
-                versions: Array.isArray(rawParsedData.versions)
-                    ? rawParsedData.versions.map((version: any) => ({
-                        content: {
-                            rawText: typeof version.content.rawText === 'string' ? version.content.rawText : '',
-                            skills: Array.isArray(version.content.skills) ? version.content.skills.filter((s: any) => typeof s === 'string') : [],
-                            experience: (version.content.experience || []).map((exp: any) => ({
-                                title: typeof exp.title === 'string' ? exp.title : '',
-                                company: typeof exp.company === 'string' ? exp.company : '',
-                                description: typeof exp.description === 'string' ? exp.description : '',
-                            })).filter((exp: any) => exp.title || exp.company || exp.description),
-                            education: (version.content.education || []).map((edu: any) => ({
-                                institution: typeof edu.institution === 'string' ? edu.institution : '',
-                                degree: typeof edu.degree === 'string' ? edu.degree : '',
-                            })).filter((edu: any) => edu.institution || edu.degree),
-                            contactInfo: { name: '', address: '', phone: '', email: '', ...version.content.contactInfo },
-                        },
-                        timestamp: typeof version.timestamp === 'number' ? version.timestamp : Date.now(),
-                        versionName: typeof version.versionName === 'string' ? version.versionName : 'Imported Version',
-                    }))
-                    : [{ content: rawParsedData.activeContent, timestamp: Date.now(), versionName: 'Initial Import from JSON' }],
-            };
-            setResumes(prev => [...prev, newResume]);
-            setEditingResume(newResume);
-            setError("Resume imported successfully!");
+        let content = '';
+        
+        if (file.type === 'application/pdf') {
+          content = await extractTextFromPdf(file);
         } else {
-            setError("Invalid JSON format for resume. Missing required fields or incorrect types.");
+          // Handle text/md files
+          content = await new Promise<string>((resolve, reject) => {
+            const reader = new FileReader();
+            reader.onload = (e) => resolve(e.target?.result as string);
+            reader.onerror = (e) => reject(e);
+            reader.readAsText(file);
+          });
         }
+
+        if (!content.trim()) {
+          throw new Error("File appears to be empty or unreadable.");
+        }
+
+        const newResume: Resume = {
+          id: generateId(),
+          name: file.name.split('.')[0],
+          content: content,
+          uploadDate: new Date().toISOString(),
+          lastModified: new Date().toISOString(),
+          normalizedContent: null, // Will be populated by AI parsing
+          atsHistory: [], // Initialize empty ATS history
+          fileName: file.name,
+          fileType: file.type,
+          fileSize: file.size,
+        };
+        addResume(newResume);
+        setSelectedResumeId(newResume.id);
+        setUploading(false);
+
+        // Trigger AI parsing for normalization
+        await handleParseResume(newResume.id, content);
+
       } catch (err: any) {
-        setError(`Failed to load JSON: ${err.message || 'Invalid JSON file.'}`);
-      } finally {
-        setIsLoading(false);
-        // Clear the file input value to allow re-uploading the same file
-        if (jsonFileInputRef.current) {
-          jsonFileInputRef.current.value = '';
-        }
+        setError(err.message || 'Failed to read file.');
+        console.error('File upload error:', err);
+        setUploading(false);
       }
     }
   };
 
-  // New: Handle JSON file export
-  const handleExportJson = useCallback(() => {
-    if (editingResume) {
-      const resumeJson = JSON.stringify(editingResume, null, 2); // Pretty print JSON
-      const blob = new Blob([resumeJson], { type: 'application/json' });
-      const url = URL.createObjectURL(blob);
-      const link = document.createElement('a');
-      link.href = url;
-      link.download = `${editingResume.name}.json`;
-      document.body.appendChild(link);
-      link.click();
-      document.body.removeChild(link);
-      URL.revokeObjectURL(url);
-      setError(`Exported "${editingResume.name}.json"`);
-    } else {
-      setError("No resume selected to export.");
-    }
-  }, [editingResume, setError]);
-
-
-  const handleParseResume = useCallback(async () => {
-    if (!resumeText.trim()) {
-      setError('Please upload a resume file or paste text to parse.');
-      return;
-    }
-    setIsLoading(true);
+  const handleParseResume = async (resumeId: string, content: string) => {
+    setParsing(true);
     setError(null);
     try {
-      const parsedContent = await parseResumeText(resumeText);
-      const newResume: Resume = {
-        id: `resume-${Date.now()}`,
-        name: file?.name.replace(/\.[^/.]+$/, "") || `New Resume ${resumes.length + 1}`,
-        activeContent: parsedContent,
-        versions: [{ content: parsedContent, timestamp: Date.now(), versionName: 'Initial Parse' }],
-      };
-      setResumes(prev => [...prev, newResume]);
-      setEditingResume(newResume); // Automatically open the newly parsed resume for editing
-      setFile(null); // Clear file input
-      setResumeText(''); // Clear text area
-    } catch (e: any) {
-      setError(e.message || 'Failed to parse resume. Please check the content format.');
+      const parsedData: NormalizedResume | null = await parseResumeText(content);
+      if (parsedData) {
+        updateResume(resumeId, { normalizedContent: parsedData });
+      } else {
+        setError('AI failed to parse resume. Please check content format.');
+      }
+    } catch (err) {
+      setError('AI parsing error. Please try again later.');
+      console.error('AI parsing error:', err);
     } finally {
-      setIsLoading(false);
+      setParsing(false);
     }
-  }, [resumeText, file, resumes, setResumes, setError]);
+  };
 
-  const handleSaveResume = useCallback(() => {
-    if (editingResume && editingContent) {
-      // Save current edited content as the active content
-      const updatedResume = {
-        ...editingResume,
-        activeContent: editingContent,
-      };
-      // If the currently active content is different from the last saved version, create a new version
-      const lastVersion = editingResume.versions[editingResume.versions.length - 1];
-      if (JSON.stringify(lastVersion.content) !== JSON.stringify(editingContent)) {
-        updatedResume.versions = [
-          ...editingResume.versions,
-          { content: editingContent, timestamp: Date.now(), versionName: newVersionName || `Version ${editingResume.versions.length + 1}` }
-        ];
+  const handleAddEmptyResume = () => {
+    const newResume = generateEmptyResume();
+    addResume(newResume);
+    setSelectedResumeId(newResume.id);
+    setViewMode('edit');
+    setIsEditing(true);
+  };
+
+  const handleSaveEdit = () => {
+    if (selectedResumeId) {
+      updateResume(selectedResumeId, { content: editingResumeContent });
+      setIsEditing(false);
+      setViewMode('preview');
+      // Re-parse resume if content changed significantly? Or on demand?
+      handleParseResume(selectedResumeId, editingResumeContent);
+    }
+  };
+
+  const handleDeleteResume = (id: string) => {
+    if (window.confirm('Are you sure you want to delete this resume?')) {
+      removeResume(id);
+      if (selectedResumeId === id) {
+        setSelectedResumeId(null); // Clear selection if deleted
       }
-      setResumes(prev => prev.map(r => (r.id === updatedResume.id ? updatedResume : r)));
-      setError("Resume saved successfully!");
-      setNewVersionName('');
-      // Optionally, close editing mode or stay in it
     }
-  }, [editingResume, editingContent, newVersionName, setResumes, setError]);
+  };
 
+  const handleDownloadResume = (resume: Resume) => {
+    const filename = `${(resume?.name || 'resume').replace(/\s/g, '_')}_${(resume?.id || 'id').substring(0, 5)}.docx`;
+    downloadDocxFile(resume?.content || '', filename);
+  };
 
-  const handleSetDefault = useCallback((id: string) => {
-    setDefaultResumeId(id);
-    setError("Default resume set!");
-  }, [setDefaultResumeId, setError]);
-
-  const confirmDelete = useCallback((id: string) => {
-    setResumeToDeleteId(id);
-    setShowConfirmDelete(true);
-  }, []);
-
-  const handleDeleteResume = useCallback(() => {
-    if (resumeToDeleteId) {
-      setResumes(prev => prev.filter(r => r.id !== resumeToDeleteId));
-      if (defaultResumeId === resumeToDeleteId) {
-        setDefaultResumeId(null);
+  const handleFindJobs = async () => {
+    if (!selectedResume) {
+      setError('Please select a resume to find jobs for.');
+      return;
+    }
+    setIsFindingJobs(true);
+    setError(null);
+    try {
+      const foundJobsData = await findJobsFromResume(selectedResume.content);
+      if (foundJobsData && foundJobsData.length > 0) {
+        const newJobs: Job[] = foundJobsData.map(jobData => ({
+          id: generateId(),
+          title: jobData.title || 'N/A',
+          company: jobData.company || 'N/A',
+          location: jobData.location || 'N/A',
+          description: jobData.description || 'N/A',
+          sourceUrl: jobData.sourceUrl || '#',
+          isSaved: false,
+          requirements: jobData.requirements || [],
+          niceToHave: jobData.niceToHave || [],
+        }));
+        setJobs(newJobs);
+        setCurrentView('Find Jobs');
+      } else {
+        setError('AI could not find any matching jobs. You can try editing your resume to be more specific.');
       }
-      if (editingResume?.id === resumeToDeleteId) {
-        setEditingResume(null);
-      }
-      setResumeToDeleteId(null);
-      setShowConfirmDelete(false);
-      setError("Resume deleted successfully!");
+    } catch (err) {
+      console.error("Error finding jobs from resume:", err);
+      setError('An AI error occurred while searching for jobs. Please try again.');
+    } finally {
+      setIsFindingJobs(false);
     }
-  }, [resumeToDeleteId, resumes, defaultResumeId, editingResume, setResumes, setDefaultResumeId, setError]);
+  };
 
-  const handleLoadVersion = useCallback((version: ResumeVersion) => {
-    if (editingResume) {
-      setEditingContent(version.content);
-      setError(`Loaded version: "${version.versionName}"`);
+  const handleAutoFix = async (check: AtsCheck) => {
+    if (!selectedResume) return;
+    
+    // Find the job to get the description
+    // We look in savedJobs first, then current search results (jobs)
+    const job = savedJobs.find(j => j.id === check.jobId) || jobs.find(j => j.id === check.jobId);
+    
+    if (!job) {
+        setError("Could not find the job description associated with this ATS check. Ensure the job is in your Saved Jobs.");
+        return;
     }
-  }, [editingResume, setError]);
 
-  const handleOpenContactInfoModal = useCallback(() => {
-    if (editingContent) {
-      setCurrentContactInfo(editingContent.contactInfo);
-      setShowContactInfoModal(true);
+    setParsing(true); // Use parsing state to show loading
+    setError(null);
+
+    try {
+        const improvedContent = await autoFixResume(selectedResume.content, job.description, check.feedback);
+        if (improvedContent) {
+            updateResume(selectedResume.id, { content: improvedContent });
+            // Re-parse to update structure
+            await handleParseResume(selectedResume.id, improvedContent);
+            setViewMode('preview');
+            alert("Resume successfully auto-fixed based on ATS feedback!");
+        } else {
+            setError("Failed to generate auto-fixed content.");
+        }
+    } catch (err) {
+        console.error("Auto-fix error:", err);
+        setError("An error occurred while auto-fixing the resume.");
+    } finally {
+        setParsing(false);
     }
-  }, [editingContent]);
+  };
 
-  const handleSaveContactInfo = useCallback(() => {
-    if (editingContent && currentContactInfo) {
-      setEditingContent(prev => prev ? { ...prev, contactInfo: currentContactInfo } : null);
-      setShowContactInfoModal(false);
-      setError("Contact info updated!");
-    }
-  }, [editingContent, currentContactInfo, setError]);
-
-  const handleDownloadDocx = useCallback(() => {
-    if (editingResume && editingContent) {
-      const docName = `${editingResume.name}-v${editingResume.versions.length}.docx`;
-      // Format content for DOCX. For simplicity, just use the rawText from activeContent for download.
-      // A more sophisticated implementation would format the structured content.
-      downloadDocxFile(docName, editingContent.rawText);
-      setError(`Downloading "${docName}"`);
+  const toggleHistoryItem = (id: string) => {
+    if (expandedHistoryItem === id) {
+        setExpandedHistoryItem(null);
     } else {
-      setError("No resume selected for download.");
+        setExpandedHistoryItem(id);
     }
-  }, [editingResume, editingContent, setError]);
+  }
 
+  const selectedResume = resumes?.find(r => r.id === selectedResumeId);
+
+  // Helper to get score color text
+  const getScoreColor = (score: number) => {
+    if (score >= 80) return 'text-green-600';
+    if (score >= 60) return 'text-yellow-600';
+    return 'text-red-600';
+  };
+
+  // Helper to get progress bar color background
+  const getProgressBarColor = (score: number) => {
+    if (score >= 80) return 'bg-green-500';
+    if (score >= 60) return 'bg-yellow-500';
+    return 'bg-red-500';
+  };
+
+  const getLatestAtsCheck = (resume: Resume) => {
+    if (!resume.atsHistory || resume.atsHistory.length === 0) return null;
+    return [...resume.atsHistory].sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime())[0];
+  };
 
   return (
-    <div className="max-w-7xl mx-auto space-y-8">
-      <div>
-        <h2 className="text-3xl font-bold text-gray-800 dark:text-white">Resume Hub</h2>
-        <p className="mt-2 text-lg text-gray-600 dark:text-gray-400">
-          Upload, parse, edit, and manage multiple versions of your resumes.
-        </p>
-      </div>
+    <div className="resume-upload-section bg-white dark:bg-gray-900 p-6 rounded-lg shadow-md border border-gray-200 dark:border-gray-700 min-h-[70vh]">
+      <h2 className="text-3xl font-extrabold text-gray-900 dark:text-white mb-6 text-center">Your Resume Hub</h2>
 
-      {/* Upload & Parse Section */}
-      <div className="bg-white dark:bg-gray-800 p-6 rounded-xl shadow-lg">
-        <h3 className="text-xl font-semibold mb-4">Upload & Parse New Resume</h3>
-        <div className="flex flex-col md:flex-row gap-4">
-          <label className="flex-none w-auto inline-flex items-center justify-center mr-4 py-2 px-4 rounded-full border-0 text-sm font-semibold bg-blue-50 text-blue-700 hover:bg-blue-100 dark:file:bg-blue-900 dark:file:text-blue-300 dark:hover:file:bg-blue-800 cursor-pointer">
-            <input
-              type="file"
-              ref={fileInputRef}
-              onChange={handleFileChange}
-              accept=".txt,.pdf,.docx"
-              className="sr-only" // Hide the actual input visually
-            />
-            Choose File {file ? `(${file.name})` : ''}
-          </label>
-          <textarea
-            value={resumeText}
-            onChange={(e) => setResumeText(e.target.value)}
-            placeholder="Or paste your resume text here (e.g., from a PDF or DOCX that couldn't be parsed)."
-            rows={6}
-            className="w-full p-3 border rounded-lg bg-gray-50 dark:bg-gray-700/50 resize-y"
-          ></textarea>
-        </div>
-        <button
-          onClick={handleParseResume}
-          disabled={isLoading || !resumeText.trim()}
-          className="mt-4 w-full bg-blue-600 hover:bg-blue-700 text-white font-bold py-3 px-4 rounded-lg disabled:opacity-50 flex items-center justify-center gap-2"
-        >
-          {isLoading ? <LoadingSpinner className="w-5 h-5" /> : 'Parse Resume'}
-        </button>
-      </div>
+      <div className="flex flex-col md:flex-row gap-6">
+        {/* Left Pane: Resume List & Actions */}
+        <div className="md:w-1/3 bg-gray-50 dark:bg-gray-800 p-4 rounded-lg shadow-sm border border-gray-200 dark:border-gray-700">
+          <h3 className="text-xl font-bold text-gray-900 dark:text-white mb-4">Manage Resumes</h3>
 
-      {/* Resume List Section */}
-      <div className="bg-white dark:bg-gray-800 p-6 rounded-xl shadow-lg">
-        <h3 className="text-xl font-semibold mb-4">My Saved Resumes</h3>
-        <div className="flex flex-col sm:flex-row gap-2 mb-4">
-            <label className="flex-1 bg-purple-600 hover:bg-purple-700 text-white font-bold py-2 px-4 rounded-lg text-sm text-center cursor-pointer disabled:opacity-50 flex items-center justify-center gap-2">
-                <input
-                    type="file"
-                    ref={jsonFileInputRef}
-                    onChange={handleLoadJson}
-                    accept=".json"
-                    className="sr-only"
-                    disabled={isLoading}
-                />
-                {isLoading ? <LoadingSpinner className="w-4 h-4" /> : null}
-                Import JSON Resume
+          <div className="flex flex-col space-y-3 mb-6">
+            <label htmlFor="resume-upload" className="w-full bg-blue-600 hover:bg-blue-700 text-white font-bold py-2 px-4 rounded-lg shadow cursor-pointer text-center flex items-center justify-center transition-colors duration-200">
+              {uploading ? (
+                <svg className="animate-spin h-5 w-5 mr-3" viewBox="0 0 24 24">
+                  <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
+                  <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                </svg>
+              ) : (
+                <ArrowUpTrayIcon className="h-5 w-5 mr-2" />
+              )}
+              Upload Resume (PDF/TXT/MD)
             </label>
-            {editingResume && (
-              <button
-                onClick={handleExportJson}
-                disabled={isLoading}
-                className="flex-1 bg-gray-200 dark:bg-gray-700 hover:bg-gray-300 dark:hover:bg-gray-600 text-gray-800 dark:text-gray-200 font-bold py-2 px-4 rounded-lg text-sm disabled:opacity-50"
-              >
-                Export Selected as JSON
-              </button>
-            )}
-        </div>
-        {resumes.length === 0 ? (
-          <p className="text-center text-gray-500 pt-4">No resumes saved yet. Upload and parse one above!</p>
-        ) : (
-          <ul className="space-y-3">
-            {resumes.map(resume => (
-              <li
-                key={resume.id}
-                className={`p-4 rounded-lg border-2 ${resume.id === defaultResumeId ? 'border-green-500 dark:border-green-400' : 'border-gray-200 dark:border-gray-700'} ${editingResume?.id === resume.id ? 'bg-blue-100 dark:bg-blue-900/50' : 'bg-gray-50 dark:bg-gray-700/50'} hover:shadow-md transition-shadow cursor-pointer`}
-                onClick={() => setEditingResume(resume)}
-              >
-                <div className="flex justify-between items-center">
-                  <div>
-                    <h4 className="font-bold text-lg">{resume.name}</h4>
-                    <p className="text-sm text-gray-600 dark:text-gray-400">
-                      Last Updated: {new Date(resume.activeContent.contactInfo.name ? resume.versions[resume.versions.length - 1].timestamp : 0).toLocaleDateString()}
-                    </p>
-                  </div>
-                  <div className="flex items-center space-x-2">
-                    {resume.id === defaultResumeId && (
-                      <span className="text-green-600 dark:text-green-400 font-semibold text-sm">Default</span>
+            <input
+              id="resume-upload"
+              type="file"
+              accept=".txt,.md,.pdf"
+              className="hidden"
+              onChange={handleFileChange}
+              disabled={uploading}
+            />
+            <button
+              onClick={handleAddEmptyResume}
+              className="w-full bg-green-600 hover:bg-green-700 text-white font-bold py-2 px-4 rounded-lg shadow flex items-center justify-center transition-colors duration-200"
+            >
+              <PlusIcon className="h-5 w-5 mr-2" /> Create New Resume
+            </button>
+          </div>
+
+          {error && (
+            <div className="bg-red-100 dark:bg-red-900 border border-red-400 text-red-700 dark:text-red-300 px-3 py-2 rounded-md mb-4 text-sm">
+              {error}
+            </div>
+          )}
+
+          {(resumes?.length || 0) === 0 ? (
+            <p className="text-center text-gray-500 dark:text-gray-400 mt-8">No resumes uploaded yet.</p>
+          ) : (
+            <ul className="space-y-3">
+              {resumes?.map((resume) => {
+                const latestCheck = getLatestAtsCheck(resume);
+                return (
+                  <li
+                    key={resume?.id}
+                    className={`bg-white dark:bg-gray-700 p-3 rounded-lg shadow-sm flex flex-col border cursor-pointer hover:shadow-md transition-shadow duration-200
+                      ${selectedResumeId === resume?.id ? 'border-blue-500 dark:border-blue-400 shadow-lg' : 'border-gray-200 dark:border-gray-600'}`}
+                    onClick={() => setSelectedResumeId(resume?.id)}
+                  >
+                    <div className="flex items-center justify-between w-full mb-2">
+                      <p className="font-semibold text-gray-900 dark:text-white truncate pr-2">{resume?.name || 'Untitled Resume'}</p>
+                      <div className="flex space-x-2 flex-shrink-0">
+                        <button
+                          onClick={(e) => { e.stopPropagation(); if (resume) handleDownloadResume(resume); }}
+                          className="text-blue-600 hover:text-blue-800 dark:text-blue-400 dark:hover:text-blue-300 transition-colors duration-200"
+                          title="Download DOCX"
+                        >
+                          <CloudArrowDownIcon className="h-5 w-5" />
+                        </button>
+                        <button
+                          onClick={(e) => { e.stopPropagation(); if (resume?.id) handleDeleteResume(resume.id); }}
+                          className="text-red-600 hover:text-red-800 dark:text-red-400 dark:hover:text-red-300 transition-colors duration-200"
+                          title="Delete Resume"
+                        >
+                          <TrashIcon className="h-5 w-5" />
+                        </button>
+                      </div>
+                    </div>
+                    
+                    {latestCheck && (
+                      <div className="flex items-center mb-2 bg-gray-50 dark:bg-gray-800 rounded px-2 py-1 w-fit border border-gray-100 dark:border-gray-600">
+                        <div className={`h-2.5 w-2.5 rounded-full mr-2 ${getProgressBarColor(latestCheck.score)}`}></div>
+                        <span className="text-xs text-gray-600 dark:text-gray-300">
+                          ATS Score: <span className={`font-bold ${getScoreColor(latestCheck.score)}`}>{latestCheck.score}</span>
+                        </span>
+                      </div>
                     )}
-                    <button onClick={(e) => { e.stopPropagation(); handleSetDefault(resume.id); }} className="p-2 rounded-full text-blue-600 dark:text-blue-400 hover:bg-gray-200 dark:hover:bg-gray-600" title="Set as Default">
-                      <CheckSquareIcon className="w-5 h-5" filled={resume.id === defaultResumeId} />
+
+                    <p className="text-xs text-gray-500 dark:text-gray-400">Modified: {isValidDate(resume?.lastModified) ? new Date(resume.lastModified).toLocaleDateString() : 'N/A'}</p>
+                  </li>
+                );
+              })}
+            </ul>
+          )}
+        </div>
+
+        {/* Right Pane: Resume Editor/Preview */}
+        <div className="md:w-2/3 bg-gray-50 dark:bg-gray-800 p-6 rounded-lg shadow-xl border border-gray-200 dark:border-gray-700">
+          {selectedResume ? (
+            <>
+              <div className="flex justify-between items-center mb-4 pb-4 border-b border-gray-200 dark:border-gray-700">
+                <h3 className="text-2xl font-bold text-gray-900 dark:text-white truncate max-w-md">{selectedResume.name}</h3>
+                <div className="flex space-x-2">
+                  {/* View Switcher Buttons */}
+                  <button
+                    onClick={() => { setViewMode('preview'); setIsEditing(false); }}
+                    className={`p-2 rounded-full transition-colors duration-200 ${viewMode === 'preview' ? 'bg-blue-200 dark:bg-blue-800 text-blue-800 dark:text-blue-100' : 'hover:bg-gray-200 dark:hover:bg-gray-700 text-gray-600 dark:text-gray-300'}`}
+                    title="Preview"
+                  >
+                    <EyeIcon className="h-5 w-5" />
+                  </button>
+                  <button
+                    onClick={() => { setViewMode('edit'); setIsEditing(true); }}
+                    className={`p-2 rounded-full transition-colors duration-200 ${viewMode === 'edit' ? 'bg-blue-200 dark:bg-blue-800 text-blue-800 dark:text-blue-100' : 'hover:bg-gray-200 dark:hover:bg-gray-700 text-gray-600 dark:text-gray-300'}`}
+                    title="Edit Resume"
+                  >
+                    <PencilSquareIcon className="h-5 w-5" />
+                  </button>
+                  <button
+                    onClick={() => { setViewMode('history'); setIsEditing(false); }}
+                    className={`p-2 rounded-full transition-colors duration-200 ${viewMode === 'history' ? 'bg-blue-200 dark:bg-blue-800 text-blue-800 dark:text-blue-100' : 'hover:bg-gray-200 dark:hover:bg-gray-700 text-gray-600 dark:text-gray-300'}`}
+                    title="ATS History"
+                  >
+                    <ChartBarIcon className="h-5 w-5" />
+                  </button>
+
+                  <div className="h-6 w-px bg-gray-300 dark:bg-gray-600 mx-1"></div>
+
+                  <button
+                    onClick={handleFindJobs}
+                    className="p-2 rounded-full bg-teal-100 text-teal-700 hover:bg-teal-200 dark:bg-teal-900 dark:text-teal-300 dark:hover:bg-teal-800 transition-colors duration-200 flex items-center"
+                    title="Find Matching Jobs with AI"
+                    disabled={isFindingJobs || parsing}
+                  >
+                    {isFindingJobs ? (
+                      <svg className="animate-spin h-5 w-5" viewBox="0 0 24 24">
+                        <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
+                        <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                      </svg>
+                    ) : (
+                      <MagnifyingGlassIcon className="h-5 w-5" />
+                    )}
+                  </button>
+                  
+                  {isEditing && (
+                    <button
+                      onClick={handleSaveEdit}
+                      className="p-2 rounded-full bg-green-100 text-green-700 hover:bg-green-200 dark:bg-green-900 dark:text-green-300 dark:hover:bg-green-800 transition-colors duration-200"
+                      title="Save Changes"
+                    >
+                      <CheckCircleIcon className="h-5 w-5" />
                     </button>
-                    <button onClick={(e) => { e.stopPropagation(); confirmDelete(resume.id); }} className="p-2 rounded-full text-red-600 dark:text-red-400 hover:bg-gray-200 dark:hover:bg-gray-600" title="Delete Resume">
-                      <TrashIcon className="w-5 h-5" />
-                    </button>
+                  )}
+                </div>
+              </div>
+
+              {(parsing || isFindingJobs) && (
+                <div className="flex items-center text-blue-600 dark:text-blue-400 mb-4">
+                  <svg className="animate-spin h-5 w-5 mr-3" viewBox="0 0 24 24">
+                    <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
+                    <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                  </svg>
+                  <span>{parsing ? 'Analyzing and normalizing resume with AI...' : 'Finding matching jobs with AI...'}</span>
+                </div>
+              )}
+
+              {viewMode === 'edit' && (
+                <textarea
+                  className="w-full h-[500px] p-4 border border-gray-300 dark:border-gray-600 rounded-md bg-white dark:bg-gray-700 text-gray-900 dark:text-white focus:ring-blue-500 focus:border-blue-500 resize-y"
+                  value={editingResumeContent}
+                  onChange={(e) => setEditingResumeContent(e.target.value)}
+                />
+              )}
+
+              {viewMode === 'preview' && (
+                <div>
+                  {/* Show latest ATS score summary if available */}
+                  {(() => {
+                    const latest = getLatestAtsCheck(selectedResume);
+                    if (latest) {
+                      return (
+                        <div className="mb-6 bg-blue-50 dark:bg-blue-900/20 border border-blue-200 dark:border-blue-800 p-4 rounded-lg flex items-center justify-between">
+                          <div className="flex items-center">
+                            <ChartBarIcon className="h-8 w-8 text-blue-500 mr-3" />
+                            <div>
+                              <p className="text-sm font-medium text-gray-600 dark:text-gray-300">Latest ATS Score for "{latest.jobTitle}"</p>
+                              <div className="flex items-center mt-1">
+                                <div className="w-32 bg-gray-200 dark:bg-gray-700 rounded-full h-2.5 mr-3">
+                                  <div className={`h-2.5 rounded-full ${getProgressBarColor(latest.score)}`} style={{ width: `${latest.score}%` }}></div>
+                                </div>
+                                <span className={`font-bold text-lg ${getScoreColor(latest.score)}`}>{latest.score}/100</span>
+                              </div>
+                            </div>
+                          </div>
+                          <button 
+                            onClick={() => { setViewMode('history'); setExpandedHistoryItem(latest.id); }}
+                            className="text-sm text-blue-600 dark:text-blue-400 hover:underline"
+                          >
+                            View Details
+                          </button>
+                        </div>
+                      );
+                    }
+                    return null;
+                  })()}
+                  <div className="prose dark:prose-invert max-w-none text-gray-800 dark:text-gray-200">
+                    <MarkdownRenderer>{selectedResume.content}</MarkdownRenderer>
                   </div>
                 </div>
-              </li>
-            ))}
-          </ul>
-        )}
+              )}
+
+              {viewMode === 'history' && (
+                <div className="ats-history-section">
+                    {!selectedResume.atsHistory || selectedResume.atsHistory.length === 0 ? (
+                        <div className="text-center py-10 text-gray-500 dark:text-gray-400">
+                            <ChartBarIcon className="h-16 w-16 mx-auto mb-4 text-gray-300 dark:text-gray-600" />
+                            <p className="text-lg">No ATS history available.</p>
+                            <p className="text-sm mt-2">Use the "Application Generator" to check your resume against job descriptions.</p>
+                            <button 
+                                onClick={() => setCurrentView('Application Generator')}
+                                className="mt-4 px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-md transition-colors"
+                            >
+                                Go to Application Generator
+                            </button>
+                        </div>
+                    ) : (
+                        <div className="space-y-4">
+                            {[...selectedResume.atsHistory].sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime()).map((check) => (
+                                <div key={check.id} className="border border-gray-200 dark:border-gray-700 rounded-lg bg-white dark:bg-gray-700 overflow-hidden shadow-sm">
+                                    <div 
+                                        className="p-4 flex flex-col sm:flex-row justify-between items-start sm:items-center cursor-pointer hover:bg-gray-50 dark:hover:bg-gray-600 transition-colors gap-4"
+                                        onClick={() => toggleHistoryItem(check.id)}
+                                    >
+                                        <div className="flex-grow">
+                                            <div className="flex items-center gap-2 mb-1">
+                                                <span className="font-bold text-gray-900 dark:text-white text-lg">{check.jobTitle}</span>
+                                                <span className="text-sm text-gray-500 dark:text-gray-300">at {check.company}</span>
+                                            </div>
+                                            <p className="text-xs text-gray-400">{new Date(check.date).toLocaleDateString()} {new Date(check.date).toLocaleTimeString()}</p>
+                                        </div>
+                                        <div className="flex items-center gap-4 w-full sm:w-auto justify-between sm:justify-end">
+                                            <div className="flex flex-col items-end min-w-[120px]">
+                                                <span className={`text-lg font-bold ${getScoreColor(check.score)}`}>{check.score}/100</span>
+                                                <div className="w-full bg-gray-200 rounded-full h-2 dark:bg-gray-600 mt-1">
+                                                    <div 
+                                                        className={`h-2 rounded-full ${getProgressBarColor(check.score)}`} 
+                                                        style={{ width: `${check.score}%` }}
+                                                    ></div>
+                                                </div>
+                                            </div>
+                                            {expandedHistoryItem === check.id ? (
+                                                <ChevronUpIcon className="h-5 w-5 text-gray-500 flex-shrink-0" />
+                                            ) : (
+                                                <ChevronDownIcon className="h-5 w-5 text-gray-500 flex-shrink-0" />
+                                            )}
+                                        </div>
+                                    </div>
+                                    {expandedHistoryItem === check.id && (
+                                        <div className="p-4 bg-gray-50 dark:bg-gray-800 border-t border-gray-200 dark:border-gray-700">
+                                            <h4 className="font-semibold text-gray-800 dark:text-gray-100 mb-2 border-b border-gray-200 dark:border-gray-700 pb-2">Detailed ATS Feedback</h4>
+                                            <div className="prose dark:prose-invert max-w-none text-sm text-gray-700 dark:text-gray-300 pt-2">
+                                                <MarkdownRenderer>{check.feedback}</MarkdownRenderer>
+                                            </div>
+                                            
+                                            {check.jobId && (savedJobs.some(j => j.id === check.jobId) || jobs.some(j => j.id === check.jobId)) && (
+                                                <button
+                                                    onClick={(e) => { e.stopPropagation(); handleAutoFix(check); }}
+                                                    disabled={parsing}
+                                                    className="mt-4 flex items-center bg-purple-600 hover:bg-purple-700 text-white px-4 py-2 rounded-md text-sm font-medium transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                                                >
+                                                    {parsing ? (
+                                                        <svg className="animate-spin h-4 w-4 mr-2" viewBox="0 0 24 24">
+                                                            <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
+                                                            <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                                                        </svg>
+                                                    ) : (
+                                                        <SparklesIcon className="h-4 w-4 mr-2" />
+                                                    )}
+                                                    Auto-Fix Resume based on this Feedback
+                                                </button>
+                                            )}
+                                        </div>
+                                    )}
+                                </div>
+                            ))}
+                        </div>
+                    )}
+                </div>
+              )}
+
+              {viewMode !== 'history' && selectedResume.normalizedContent && (
+                <div className="mt-8 pt-6 border-t border-gray-200 dark:border-gray-700">
+                  <h4 className="text-xl font-bold text-gray-900 dark:text-white mb-4 flex items-center">
+                    <DocumentTextIcon className="h-6 w-6 mr-2 text-blue-600 dark:text-blue-400" />
+                    AI-Parsed Structure
+                  </h4>
+                  <pre className="bg-gray-100 dark:bg-gray-700 p-4 rounded-md text-sm text-gray-800 dark:text-gray-200 overflow-x-auto">
+                    {JSON.stringify(selectedResume.normalizedContent, null, 2)}
+                  </pre>
+                </div>
+              )}
+            </>
+          ) : (
+            <p className="text-center text-gray-500 dark:text-gray-400 mt-20 text-lg">
+              Select a resume or upload/create a new one to view and edit.
+            </p>
+          )}
+        </div>
       </div>
-
-      {/* Resume Editor Section */}
-      {editingResume && editingContent && (
-        <div className="bg-white dark:bg-gray-800 p-6 rounded-xl shadow-lg animate-fade-in">
-          <div className="flex justify-between items-center mb-4">
-            <h3 className="text-xl font-semibold">Editing: {editingResume.name}</h3>
-            <div className="flex gap-2">
-              <button onClick={() => setEditingResume(null)} className="bg-gray-500 hover:bg-gray-600 text-white font-bold py-2 px-4 rounded-lg text-sm">
-                Close Editor
-              </button>
-            </div>
-          </div>
-
-          {/* Contact Info Editor */}
-          <div className="mb-6 p-4 border rounded-lg dark:border-gray-700 bg-gray-50 dark:bg-gray-700/50">
-            <div className="flex justify-between items-center mb-3">
-              <h4 className="font-semibold">Contact Information</h4>
-              <button onClick={handleOpenContactInfoModal} className="text-blue-600 dark:text-blue-400 hover:underline text-sm flex items-center gap-1">
-                <PencilIcon className="w-4 h-4" /> Edit
-              </button>
-            </div>
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 text-sm">
-              <p><strong>Name:</strong> {editingContent.contactInfo.name}</p>
-              <p><strong>Email:</strong> {editingContent.contactInfo.email}</p>
-              <p><strong>Phone:</strong> {editingContent.contactInfo.phone}</p>
-              <p><strong>Address:</strong> {editingContent.contactInfo.address}</p>
-              {editingContent.contactInfo.linkedin && <p><strong>LinkedIn:</strong> <a href={editingContent.contactInfo.linkedin} target="_blank" rel="noopener noreferrer" className="text-blue-600 hover:underline dark:text-blue-400">{editingContent.contactInfo.linkedin}</a></p>}
-              {editingContent.contactInfo.github && <p><strong>GitHub:</strong> <a href={editingContent.contactInfo.github} target="_blank" rel="noopener noreferrer" className="text-blue-600 hover:underline dark:text-blue-400">{editingContent.contactInfo.github}</a></p>}
-              {editingContent.contactInfo.portfolio && <p><strong>Portfolio:</strong> <a href={editingContent.contactInfo.portfolio} target="_blank" rel="noopener noreferrer" className="text-blue-600 hover:underline dark:text-blue-400">{editingContent.contactInfo.portfolio}</a></p>}
-            </div>
-          </div>
-
-          {/* Main Content Editor */}
-          <label htmlFor="resume-editor" className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">Resume Content (Markdown supported)</label>
-          <textarea
-            id="resume-editor"
-            value={editingContent.rawText}
-            onChange={(e) => setEditingContent(prev => prev ? { ...prev, rawText: e.target.value } : null)}
-            rows={20}
-            className="w-full p-3 border rounded-lg bg-gray-50 dark:bg-gray-700/50 font-mono text-sm"
-          ></textarea>
-          
-          <div className="mt-4 flex flex-col sm:flex-row justify-between items-center gap-4">
-            <div className="flex-1 w-full sm:w-auto">
-              <label htmlFor="version-name" className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">New Version Name (Optional)</label>
-              <input
-                id="version-name"
-                type="text"
-                value={newVersionName}
-                onChange={(e) => setNewVersionName(e.target.value)}
-                placeholder="e.g., 'Update for Google'"
-                className="w-full p-2 border rounded-lg bg-gray-50 dark:bg-gray-700"
-              />
-            </div>
-            <div className="flex gap-3 mt-4 sm:mt-0">
-              <button
-                onClick={handleSaveResume}
-                disabled={isLoading || !editingContent.rawText.trim() || JSON.stringify(editingResume.activeContent) === JSON.stringify(editingContent)}
-                className="bg-green-600 hover:bg-green-700 text-white font-bold py-3 px-4 rounded-lg disabled:opacity-50 flex items-center justify-center gap-2"
-              >
-                {isLoading ? <LoadingSpinner className="w-5 h-5" /> : 'Save Edits'}
-              </button>
-              <button onClick={handleDownloadDocx} className="bg-gray-200 dark:bg-gray-700 hover:bg-gray-300 dark:hover:bg-gray-600 font-bold py-3 px-4 rounded-lg text-sm">
-                Download DOCX
-              </button>
-            </div>
-          </div>
-
-          {/* Version History */}
-          <div className="mt-8 p-4 border rounded-lg dark:border-gray-700 bg-gray-50 dark:bg-gray-700/50">
-            <h4 className="font-semibold mb-3">Version History ({editingResume.versions.length})</h4>
-            <ul className="space-y-2 max-h-48 overflow-y-auto">
-              {editingResume.versions.map((version, index) => (
-                <li key={index} className="flex justify-between items-center p-2 rounded-lg bg-white dark:bg-gray-800 shadow-sm">
-                  <div>
-                    <p className="font-medium">{version.versionName}</p>
-                    <p className="text-xs text-gray-500 dark:text-gray-400">{new Date(version.timestamp).toLocaleString()}</p>
-                  </div>
-                  <button onClick={() => handleLoadVersion(version)} className="text-blue-600 dark:text-blue-400 hover:underline text-sm">
-                    Load
-                  </button>
-                </li>
-              ))}
-            </ul>
-          </div>
-        </div>
-      )}
-
-      {/* Delete Confirmation Modal */}
-      {showConfirmDelete && (
-        <div className="fixed inset-0 bg-black bg-opacity-50 flex justify-center items-center z-50" role="dialog" aria-modal="true" aria-labelledby="delete-resume-title">
-          <div className="bg-white dark:bg-gray-800 rounded-lg shadow-xl p-6 w-full max-w-sm">
-            <h3 id="delete-resume-title" className="text-xl font-semibold mb-4 text-gray-900 dark:text-gray-100">Confirm Delete</h3>
-            <p className="text-gray-700 dark:text-gray-300 mb-6">Are you sure you want to delete this resume? This action cannot be undone.</p>
-            <div className="flex justify-end gap-3">
-              <button
-                onClick={() => setShowConfirmDelete(false)}
-                className="bg-gray-300 dark:bg-gray-700 hover:bg-gray-400 dark:hover:bg-gray-600 text-gray-800 dark:text-gray-200 font-bold py-2 px-4 rounded-lg"
-              >
-                Cancel
-              </button>
-              <button
-                onClick={handleDeleteResume}
-                className="bg-red-600 hover:bg-red-700 text-white font-bold py-2 px-4 rounded-lg"
-              >
-                Delete
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* Contact Info Modal */}
-      {showContactInfoModal && currentContactInfo && (
-        <div className="fixed inset-0 bg-black bg-opacity-50 flex justify-center items-center z-50" role="dialog" aria-modal="true" aria-labelledby="edit-contact-title">
-          <div className="bg-white dark:bg-gray-800 rounded-lg shadow-xl p-6 w-full max-w-md">
-            <h3 id="edit-contact-title" className="text-xl font-semibold mb-4 text-gray-900 dark:text-gray-100">Edit Contact Information</h3>
-            <form onSubmit={(e) => { e.preventDefault(); handleSaveContactInfo(); }} className="space-y-4">
-              <div>
-                <label htmlFor="contact-name" className="block text-sm font-medium text-gray-700 dark:text-gray-300">Name</label>
-                <input
-                  id="contact-name"
-                  type="text"
-                  value={currentContactInfo.name}
-                  onChange={(e) => setCurrentContactInfo(prev => prev ? { ...prev, name: e.target.value } : null)}
-                  className="mt-1 w-full p-2 border rounded-lg bg-gray-50 dark:bg-gray-700"
-                  required
-                />
-              </div>
-              <div>
-                <label htmlFor="contact-email" className="block text-sm font-medium text-gray-700 dark:text-gray-300">Email</label>
-                <input
-                  id="contact-email"
-                  type="email"
-                  value={currentContactInfo.email}
-                  onChange={(e) => setCurrentContactInfo(prev => prev ? { ...prev, email: e.target.value } : null)}
-                  className="mt-1 w-full p-2 border rounded-lg bg-gray-50 dark:bg-gray-700"
-                  required
-                />
-              </div>
-              <div>
-                <label htmlFor="contact-phone" className="block text-sm font-medium text-gray-700 dark:text-gray-300">Phone</label>
-                <input
-                  id="contact-phone"
-                  type="tel"
-                  value={currentContactInfo.phone}
-                  onChange={(e) => setCurrentContactInfo(prev => prev ? { ...prev, phone: e.target.value } : null)}
-                  className="mt-1 w-full p-2 border rounded-lg bg-gray-50 dark:bg-gray-700"
-                  required
-                />
-              </div>
-              <div>
-                <label htmlFor="contact-address" className="block text-sm font-medium text-gray-700 dark:text-gray-300">Address</label>
-                <input
-                  id="contact-address"
-                  type="text"
-                  value={currentContactInfo.address}
-                  onChange={(e) => setCurrentContactInfo(prev => prev ? { ...prev, address: e.target.value } : null)}
-                  className="mt-1 w-full p-2 border rounded-lg bg-gray-50 dark:bg-gray-700"
-                  required
-                />
-              </div>
-              <div>
-                <label htmlFor="contact-linkedin" className="block text-sm font-medium text-gray-700 dark:text-gray-300">LinkedIn URL (Optional)</label>
-                <input
-                  id="contact-linkedin"
-                  type="url"
-                  value={currentContactInfo.linkedin || ''}
-                  onChange={(e) => setCurrentContactInfo(prev => prev ? { ...prev, linkedin: e.target.value || undefined } : null)}
-                  className="mt-1 w-full p-2 border rounded-lg bg-gray-50 dark:bg-gray-700"
-                  placeholder="https://linkedin.com/in/yourname"
-                />
-              </div>
-              <div>
-                <label htmlFor="contact-github" className="block text-sm font-medium text-gray-700 dark:text-gray-300">GitHub URL (Optional)</label>
-                <input
-                  id="contact-github"
-                  type="url"
-                  value={currentContactInfo.github || ''}
-                  onChange={(e) => setCurrentContactInfo(prev => prev ? { ...prev, github: e.target.value || undefined } : null)}
-                  className="mt-1 w-full p-2 border rounded-lg bg-gray-50 dark:bg-gray-700"
-                  placeholder="https://github.com/yourusername"
-                />
-              </div>
-              <div>
-                <label htmlFor="contact-portfolio" className="block text-sm font-medium text-gray-700 dark:text-gray-300">Portfolio URL (Optional)</label>
-                <input
-                  id="contact-portfolio"
-                  type="url"
-                  value={currentContactInfo.portfolio || ''}
-                  onChange={(e) => setCurrentContactInfo(prev => prev ? { ...prev, portfolio: e.target.value || undefined } : null)}
-                  className="mt-1 w-full p-2 border rounded-lg bg-gray-50 dark:bg-gray-700"
-                  placeholder="https://yourportfolio.com"
-                />
-              </div>
-              <div className="flex justify-end gap-3">
-                <button
-                  type="button"
-                  onClick={() => setShowContactInfoModal(false)}
-                  className="bg-gray-500 hover:bg-gray-600 text-white font-bold py-2 px-4 rounded-lg"
-                >
-                  Cancel
-                </button>
-                <button
-                  type="submit"
-                  className="bg-green-600 hover:bg-green-700 text-white font-bold py-2 px-4 rounded-lg"
-                >
-                  Save Changes
-                </button>
-              </div>
-            </form>
-          </div>
-        </div>
-      )}
     </div>
   );
-};
+}
+
+export default ResumeHub;

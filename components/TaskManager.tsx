@@ -1,392 +1,327 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
+// Import useAppContext from AppContext.tsx
 import { useAppContext } from '../context/AppContext';
-import { Task, TaskStatus, TaskPriority } from '../types'; // Import TaskPriority
-import { PencilIcon, TrashIcon, CheckSquareIcon, CalendarIcon } from './icons';
+import { Task, Job, Application } from '../types';
+import { PlusIcon, TrashIcon, ArchiveBoxArrowDownIcon, CalendarDaysIcon, MegaphoneIcon } from '@heroicons/react/24/outline';
+import { CheckCircleIcon } from '@heroicons/react/24/solid';
+import { generateId } from '../utils/fileUtils';
 
-const TaskManager: React.FC = () => {
-  const { tasks, setTasks } = useAppContext();
-  const [showAddTaskForm, setShowAddTaskForm] = useState(false);
+// Helper to safely format dates and prevent crashes from invalid date strings
+const isValidDate = (date: any): boolean => {
+  return date && !isNaN(new Date(date).getTime());
+};
+
+function TaskManager() {
+  const { tasks, addTask, updateTask, removeTask, savedJobs, applications } = useAppContext();
+
   const [newTaskTitle, setNewTaskTitle] = useState('');
-  const [newTaskDescription, setNewTaskDescription] = useState('');
   const [newTaskDueDate, setNewTaskDueDate] = useState('');
-  const [newTaskPriority, setNewTaskPriority] = useState<TaskPriority>('Medium'); // New: State for new task priority
-  const [editingTask, setEditingTask] = useState<Task | null>(null); // State to hold task being edited
+  const [newTaskPriority, setNewTaskPriority] = useState<Task['priority']>('Medium');
+  const [newTaskDescription, setNewTaskDescription] = useState('');
+  const [newTaskJobId, setNewTaskJobId] = useState<string | undefined>(undefined);
+  const [newTaskApplicationId, setNewTaskApplicationId] = useState<string | undefined>(undefined);
 
-  const [sortBy, setSortBy] = useState<'dueDate' | 'priority' | 'status'>('dueDate'); // New: State for sort type
-  const [sortOrder, setSortOrder] = useState<'asc' | 'desc'>('asc'); // New: State for sort order
+  const [filterStatus, setFilterStatus] = useState<'All' | Task['status']>('All');
+  const [filterPriority, setFilterPriority] = useState<'All' | Task['priority']>('All');
+  const [filterJobId, setFilterJobId] = useState<string | 'All'>('All');
+
+  // --- Robust Job & Application Lookups ---
+  // Create a comprehensive list of all known jobs from saved jobs and applications
+  const allKnownJobs = [...(savedJobs || [])];
+  (applications || []).forEach(app => {
+    if (app && app.jobId && !allKnownJobs.some(j => j.id === app.jobId)) {
+      allKnownJobs.push({
+        id: app.jobId,
+        title: app.jobTitle,
+        company: app.companyName,
+        location: 'N/A',
+        description: 'Full job details not available.',
+        isSaved: false,
+      } as Job);
+    }
+  });
+  allKnownJobs.sort((a, b) => (a?.company || '').localeCompare(b?.company || ''));
+
+  const allApplications = (applications || []).sort((a, b) => (a?.companyName || '').localeCompare(b?.companyName || ''));
+  // --- End Robust Lookups ---
+
+
+  const filteredTasks = (tasks || []).filter(task => {
+    // Defensive check for corrupted task data
+    if (!task || !task.status || !task.priority) return false;
+    const matchesStatus = filterStatus === 'All' || task.status === filterStatus;
+    const matchesPriority = filterPriority === 'All' || task.priority === filterPriority;
+    const matchesJob = filterJobId === 'All' || task.jobId === filterJobId || task.applicationId === filterJobId; // Match by job or application linked to job
+    return matchesStatus && matchesPriority && matchesJob;
+  }).sort((a, b) => {
+    // Sort by due date, then priority
+    const dueDateA = new Date(a?.dueDate || 0).getTime();
+    const dueDateB = new Date(b?.dueDate || 0).getTime();
+    if (dueDateA !== dueDateB) return dueDateA - dueDateB;
+
+    const priorityOrder = { 'High': 1, 'Medium': 2, 'Low': 3 };
+    return priorityOrder[a.priority] - priorityOrder[b.priority];
+  });
 
   const handleAddTask = (e: React.FormEvent) => {
     e.preventDefault();
-    if (!newTaskTitle.trim()) return;
+    if (!newTaskTitle.trim() || !newTaskDueDate.trim()) {
+      alert('Task title and due date are required.');
+      return;
+    }
 
     const newTask: Task = {
-      id: Date.now().toString(),
-      title: newTaskTitle.trim(),
-      description: newTaskDescription.trim(),
-      dueDate: newTaskDueDate || new Date().toISOString().split('T')[0], // Default to today if not set
+      id: generateId(),
+      title: newTaskTitle,
+      dueDate: newTaskDueDate,
+      priority: newTaskPriority,
       status: 'Pending',
-      priority: newTaskPriority, // New: Include priority
+      description: newTaskDescription.trim() || undefined,
+      jobId: newTaskJobId === 'All' ? undefined : newTaskJobId,
+      applicationId: newTaskApplicationId === 'All' ? undefined : newTaskApplicationId,
     };
 
-    setTasks(prev => [...prev, newTask]);
+    addTask(newTask);
     setNewTaskTitle('');
-    setNewTaskDescription('');
     setNewTaskDueDate('');
-    setNewTaskPriority('Medium'); // Reset priority
-    setShowAddTaskForm(false);
+    setNewTaskPriority('Medium');
+    setNewTaskDescription('');
+    setNewTaskJobId(undefined);
+    setNewTaskApplicationId(undefined);
   };
 
-  const handleUpdateTask = (updatedTask: Task) => {
-    setTasks(prev => prev.map(task => (task.id === updatedTask.id ? updatedTask : task)));
-    setEditingTask(null); // Exit editing mode
+  const handleUpdateTaskStatus = (taskId: string, newStatus: Task['status']) => {
+    updateTask(taskId, { status: newStatus });
   };
 
-  const handleDeleteTask = (id: string) => {
-    setTasks(prev => prev.filter(task => task.id !== id));
-    if (editingTask?.id === id) {
-        setEditingTask(null); // If deleted task was being edited, close the form
+  const handleDeleteTask = (taskId: string) => {
+    if (window.confirm('Are you sure you want to delete this task?')) {
+      removeTask(taskId);
     }
   };
 
-  const handleToggleTaskStatus = (id: string) => {
-    setTasks(prev =>
-      prev.map(task =>
-        task.id === id
-          ? { ...task, status: task.status === 'Completed' ? 'Pending' : 'Completed' }
-          : task
-      )
-    );
-  };
-
-  const getStatusColor = (status: TaskStatus) => {
-    switch (status) {
-      case 'Completed': return 'bg-green-100 text-green-800 dark:bg-green-900/50 dark:text-green-300';
-      case 'In Progress': return 'bg-blue-100 text-blue-800 dark:bg-blue-900/50 dark:text-blue-300';
-      case 'Pending':
-      default: return 'bg-yellow-100 text-yellow-800 dark:bg-yellow-900/50 dark:text-yellow-300';
+  const getJobDisplay = (jobId?: string, applicationId?: string) => {
+    if (applicationId) {
+      const app = (applications || []).find(a => a.id === applicationId);
+      if (app) return `App: ${app.jobTitle} at ${app.companyName}`;
     }
+    if (jobId) {
+      const job = allKnownJobs.find(j => j.id === jobId); // Use the comprehensive job list
+      if (job) return `Job: ${job.title} at ${job.company}`;
+    }
+    return 'General Task';
   };
 
-  const getPriorityColor = (priority: TaskPriority) => {
+  const getPriorityClass = (priority: Task['priority']) => {
     switch (priority) {
-      case 'High': return 'text-red-600 dark:text-red-400';
-      case 'Medium': return 'text-orange-600 dark:text-orange-400';
-      case 'Low':
+      case 'High': return 'bg-red-100 text-red-800 dark:bg-red-900 dark:text-red-200';
+      case 'Medium': return 'bg-yellow-100 text-yellow-800 dark:bg-yellow-900 dark:text-yellow-200';
+      case 'Low': return 'bg-green-100 text-green-800 dark:bg-green-900 dark:text-green-200';
+      default: return 'bg-gray-100 text-gray-800 dark:bg-gray-900 dark:text-gray-200';
+    }
+  };
+
+  const getStatusClass = (status: Task['status']) => {
+    switch (status) {
+      case 'Pending': return 'text-orange-600 dark:text-orange-400';
+      case 'In Progress': return 'text-blue-600 dark:text-blue-400';
+      case 'Completed': return 'text-green-600 dark:text-green-400';
       default: return 'text-gray-600 dark:text-gray-400';
     }
   };
 
-  // New: Sorting logic
-  const priorityOrder: { [key in TaskPriority]: number } = { 'Low': 1, 'Medium': 2, 'High': 3 };
-  const statusOrder: { [key in TaskStatus]: number } = { 'Completed': 1, 'In Progress': 2, 'Pending': 3 };
-
-  const sortedTasks = [...tasks].sort((a, b) => {
-    let compare = 0;
-
-    if (sortBy === 'dueDate') {
-      const dateA = new Date(a.dueDate).getTime();
-      const dateB = new Date(b.dueDate).getTime();
-      compare = dateA - dateB;
-    } else if (sortBy === 'priority') {
-      compare = priorityOrder[a.priority] - priorityOrder[b.priority];
-    } else if (sortBy === 'status') {
-      compare = statusOrder[a.status] - statusOrder[b.status];
-    }
-
-    return sortOrder === 'asc' ? compare : -compare;
-  });
-
   return (
-    <div className="max-w-7xl mx-auto space-y-8">
-      <div>
-        <h2 className="text-3xl font-bold text-gray-800 dark:text-white">Task Manager</h2>
-        <p className="mt-2 text-lg text-gray-600 dark:text-gray-400">Organize your job search and application tasks.</p>
-      </div>
+    <div className="task-manager-section bg-white dark:bg-gray-900 p-6 rounded-lg shadow-md border border-gray-200 dark:border-gray-700 min-h-[70vh]">
+      <h2 className="text-3xl font-extrabold text-gray-900 dark:text-white mb-6 text-center">Task Manager</h2>
 
-      {/* Add Task Form / Button */}
-      <div className="bg-white dark:bg-gray-800 p-6 rounded-xl shadow-lg">
-        {!showAddTaskForm ? (
-          <button
-            onClick={() => setShowAddTaskForm(true)}
-            className="w-full bg-blue-600 hover:bg-blue-700 text-white font-bold py-3 px-4 rounded-lg transition-colors"
-          >
-            + Add New Task
-          </button>
-        ) : (
-          <form onSubmit={handleAddTask} className="space-y-4">
-            <h3 className="text-xl font-semibold mb-4">Add New Task</h3>
-            <div>
-              <label htmlFor="task-title" className="block text-sm font-medium text-gray-700 dark:text-gray-300">Task Title</label>
-              <input
-                id="task-title"
-                type="text"
-                value={newTaskTitle}
-                onChange={(e) => setNewTaskTitle(e.target.value)}
-                placeholder="e.g., Follow up with Google recruiter"
-                className="mt-1 w-full p-3 border rounded-lg bg-gray-50 dark:bg-gray-700"
-                required
-              />
-            </div>
-            <div>
-              <label htmlFor="task-description" className="block text-sm font-medium text-gray-700 dark:text-gray-300">Description (Optional)</label>
-              <textarea
-                id="task-description"
-                value={newTaskDescription}
-                onChange={(e) => setNewTaskDescription(e.target.value)}
-                placeholder="Details about the task..."
-                rows={3}
-                className="mt-1 w-full p-3 border rounded-lg bg-gray-50 dark:bg-gray-700"
-              />
-            </div>
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-              <div>
-                <label htmlFor="task-duedate" className="block text-sm font-medium text-gray-700 dark:text-gray-300">Due Date</label>
-                <input
-                  id="task-duedate"
-                  type="date"
-                  value={newTaskDueDate}
-                  onChange={(e) => setNewTaskDueDate(e.target.value)}
-                  className="mt-1 w-full p-3 border rounded-lg bg-gray-50 dark:bg-gray-700"
-                  required
-                />
-              </div>
-              <div>
-                <label htmlFor="task-priority" className="block text-sm font-medium text-gray-700 dark:text-gray-300">Priority</label>
-                <select
-                  id="task-priority"
-                  value={newTaskPriority}
-                  onChange={(e) => setNewTaskPriority(e.target.value as TaskPriority)}
-                  className="mt-1 w-full p-3 border rounded-lg bg-gray-50 dark:bg-gray-700"
-                >
-                  <option value="Low">Low</option>
-                  <option value="Medium">Medium</option>
-                  <option value="High">High</option>
-                </select>
-              </div>
-            </div>
-            <div className="flex justify-end gap-3">
-              <button
-                type="button"
-                onClick={() => {
-                  setShowAddTaskForm(false);
-                  setNewTaskTitle('');
-                  setNewTaskDescription('');
-                  setNewTaskDueDate('');
-                  setNewTaskPriority('Medium'); // Reset priority on cancel
-                }}
-                className="bg-gray-500 hover:bg-gray-600 text-white font-bold py-2 px-4 rounded-lg"
-              >
-                Cancel
-              </button>
-              <button
-                type="submit"
-                className="bg-green-600 hover:bg-green-700 text-white font-bold py-2 px-4 rounded-lg"
-              >
-                Create Task
-              </button>
-            </div>
-          </form>
-        )}
-      </div>
-
-      {/* Task List */}
-      <div className="bg-white dark:bg-gray-800 p-6 rounded-xl shadow-lg">
-        <h3 className="text-xl font-semibold mb-4">My Tasks</h3>
-        {/* New: Sorting Controls */}
-        <div className="flex flex-col sm:flex-row gap-4 mb-4">
-          <div className="flex-1">
-            <label htmlFor="sort-by" className="block text-sm font-medium text-gray-700 dark:text-gray-300">Sort By</label>
+      {/* Add New Task Form */}
+      <div className="bg-gray-50 dark:bg-gray-800 p-6 rounded-lg shadow-sm border border-gray-200 dark:border-gray-700 mb-8">
+        <h3 className="text-xl font-bold text-gray-900 dark:text-white mb-4 flex items-center">
+          <PlusIcon className="h-5 w-5 mr-2 text-blue-600 dark:text-blue-400" /> Add New Task
+        </h3>
+        <form onSubmit={handleAddTask} className="grid grid-cols-1 md:grid-cols-2 gap-4">
+          <div>
+            <label htmlFor="newTaskTitle" className="block text-sm font-medium text-gray-700 dark:text-gray-200">Task Title<span className="text-red-500">*</span></label>
+            <input
+              type="text"
+              id="newTaskTitle"
+              className="mt-1 block w-full p-2 border border-gray-300 dark:border-gray-600 rounded-md shadow-sm bg-white dark:bg-gray-700 dark:text-white"
+              value={newTaskTitle}
+              onChange={(e) => setNewTaskTitle(e.target.value)}
+              required
+            />
+          </div>
+          <div>
+            <label htmlFor="newTaskDueDate" className="block text-sm font-medium text-gray-700 dark:text-gray-200">Due Date<span className="text-red-500">*</span></label>
+            <input
+              type="date"
+              id="newTaskDueDate"
+              className="mt-1 block w-full p-2 border border-gray-300 dark:border-gray-600 rounded-md shadow-sm bg-white dark:bg-gray-700 dark:text-white"
+              value={newTaskDueDate}
+              onChange={(e) => setNewTaskDueDate(e.target.value)}
+              required
+            />
+          </div>
+          <div>
+            <label htmlFor="newTaskPriority" className="block text-sm font-medium text-gray-700 dark:text-gray-200">Priority</label>
             <select
-              id="sort-by"
-              value={sortBy}
-              onChange={(e) => setSortBy(e.target.value as typeof sortBy)}
-              className="mt-1 w-full p-2 border rounded-lg bg-gray-50 dark:bg-gray-700"
+              id="newTaskPriority"
+              className="mt-1 block w-full p-2 border border-gray-300 dark:border-gray-600 rounded-md shadow-sm bg-white dark:bg-gray-700 dark:text-white"
+              value={newTaskPriority}
+              onChange={(e) => setNewTaskPriority(e.target.value as Task['priority'])}
             >
-              <option value="dueDate">Due Date</option>
-              <option value="priority">Priority</option>
-              <option value="status">Status</option>
+              <option value="High">High</option>
+              <option value="Medium">Medium</option>
+              <option value="Low">Low</option>
             </select>
           </div>
-          <div className="flex-1">
-            <label htmlFor="sort-order" className="block text-sm font-medium text-gray-700 dark:text-gray-300">Order</label>
+          <div>
+            <label htmlFor="newTaskJobId" className="block text-sm font-medium text-gray-700 dark:text-gray-200">Link to Job/Application</label>
             <select
-              id="sort-order"
-              value={sortOrder}
-              onChange={(e) => setSortOrder(e.target.value as typeof sortOrder)}
-              className="mt-1 w-full p-2 border rounded-lg bg-gray-50 dark:bg-gray-700"
+              id="newTaskJobId"
+              className="mt-1 block w-full p-2 border border-gray-300 dark:border-gray-600 rounded-md shadow-sm bg-white dark:bg-gray-700 dark:text-white"
+              value={newTaskJobId || 'All'}
+              onChange={(e) => {
+                setNewTaskJobId(e.target.value === 'All' ? undefined : e.target.value);
+                setNewTaskApplicationId(undefined); // Clear application if linking to a job
+              }}
             >
-              <option value="asc">Ascending</option>
-              <option value="desc">Descending</option>
+              <option value="All">-- Select Job --</option>
+              {allKnownJobs.map(job => (
+                <option key={job.id} value={job.id}>{job.title} ({job.company})</option>
+              ))}
             </select>
           </div>
-        </div>
-
-        {tasks.length === 0 ? (
-          <p className="text-center text-gray-500 dark:text-gray-400">No tasks added yet. Start by creating a new task!</p>
-        ) : (
-          <div className="space-y-4">
-            {sortedTasks.map(task => (
-              <div
-                key={task.id}
-                className={`flex flex-col md:flex-row items-start md:items-center justify-between p-4 rounded-lg shadow-sm border ${task.status === 'Completed' ? 'border-green-300 dark:border-green-700 bg-green-50 dark:bg-green-950 opacity-70' : 'border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-700/50'}`}
+          {newTaskJobId && (
+            <div>
+              <label htmlFor="newTaskApplicationId" className="block text-sm font-medium text-gray-700 dark:text-gray-200">Link to Specific Application (if applicable)</label>
+              <select
+                id="newTaskApplicationId"
+                className="mt-1 block w-full p-2 border border-gray-300 dark:border-gray-600 rounded-md shadow-sm bg-white dark:bg-gray-700 dark:text-white"
+                value={newTaskApplicationId || 'All'}
+                onChange={(e) => setNewTaskApplicationId(e.target.value === 'All' ? undefined : e.target.value)}
               >
-                {editingTask?.id === task.id ? (
-                  <EditTaskForm task={editingTask} onSave={handleUpdateTask} onCancel={() => setEditingTask(null)} />
-                ) : (
-                  <>
-                    <div className="flex-1 min-w-0 pr-4">
-                      <h4 className={`font-bold text-lg ${task.status === 'Completed' ? 'line-through text-gray-500 dark:text-gray-400' : ''}`}>{task.title}</h4>
-                      {task.description && (
-                        <p className="text-sm text-gray-700 dark:text-gray-300 mt-1 break-words">{task.description}</p>
-                      )}
-                      <div className="flex flex-wrap items-center gap-x-4 gap-y-2 text-sm text-gray-500 dark:text-gray-400 mt-2">
-                        <span className="flex items-center gap-1">
-                          <CalendarIcon className="w-4 h-4" />
-                          Due: {new Date(task.dueDate).toLocaleDateString('en-US', { year: 'numeric', month: 'short', day: 'numeric' })}
-                        </span>
-                        <span className={`px-2 py-0.5 rounded-full text-xs font-semibold ${getStatusColor(task.status)}`}>{task.status}</span>
-                        <span className={`font-semibold ${getPriorityColor(task.priority)}`}>Priority: {task.priority}</span>
-                      </div>
-                    </div>
-                    <div className="flex items-center gap-2 mt-3 md:mt-0">
-                      <button
-                        onClick={() => handleToggleTaskStatus(task.id)}
-                        title={task.status === 'Completed' ? 'Mark as Pending' : 'Mark as Completed'}
-                        className={`p-2 rounded-full transition-colors ${task.status === 'Completed' ? 'bg-green-500 hover:bg-green-600 text-white' : 'bg-gray-200 hover:bg-gray-300 dark:bg-gray-600 dark:hover:bg-gray-500 text-gray-800 dark:text-gray-200'}`}
-                      >
-                        <CheckSquareIcon className="w-5 h-5" filled={task.status === 'Completed'} />
-                      </button>
-                      <button
-                        onClick={() => setEditingTask(task)}
-                        title="Edit Task"
-                        className="p-2 rounded-full bg-blue-500 hover:bg-blue-600 text-white dark:bg-blue-700 dark:hover:bg-blue-600 transition-colors"
-                      >
-                        <PencilIcon className="w-5 h-5" />
-                      </button>
-                      <button
-                        onClick={() => handleDeleteTask(task.id)}
-                        title="Delete Task"
-                        className="p-2 rounded-full bg-red-500 hover:bg-red-600 text-white dark:bg-red-700 dark:hover:bg-red-600 transition-colors"
-                      >
-                        <TrashIcon className="w-5 h-5" />
-                      </button>
-                    </div>
-                  </>
-                )}
-              </div>
-            ))}
+                <option value="All">-- Select Application --</option>
+                {allApplications.filter(app => app.jobId === newTaskJobId).map(app => (
+                  <option key={app.id} value={app.id}>App: {app.jobTitle} ({app.companyName})</option>
+                ))}
+              </select>
+            </div>
+          )}
+          <div className="md:col-span-2">
+            <label htmlFor="newTaskDescription" className="block text-sm font-medium text-gray-700 dark:text-gray-200">Description</label>
+            <textarea
+              id="newTaskDescription"
+              className="mt-1 block w-full p-2 border border-gray-300 dark:border-gray-600 rounded-md shadow-sm bg-white dark:bg-gray-700 dark:text-white min-h-[80px]"
+              value={newTaskDescription}
+              onChange={(e) => setNewTaskDescription(e.target.value)}
+            ></textarea>
           </div>
-        )}
+          <div className="md:col-span-2 flex justify-end">
+            <button
+              type="submit"
+              className="bg-blue-600 hover:bg-blue-700 text-white font-bold py-2 px-4 rounded-lg shadow transition-colors duration-200 flex items-center"
+            >
+              <PlusIcon className="h-5 w-5 mr-2" /> Add Task
+            </button>
+          </div>
+        </form>
       </div>
-    </div>
-  );
-};
 
-interface EditTaskFormProps {
-  task: Task;
-  onSave: (task: Task) => void;
-  onCancel: () => void;
-}
-
-const EditTaskForm: React.FC<EditTaskFormProps> = ({ task, onSave, onCancel }) => {
-  const [editedTitle, setEditedTitle] = useState(task.title);
-  const [editedDescription, setEditedDescription] = useState(task.description);
-  const [editedDueDate, setEditedDueDate] = useState(task.dueDate);
-  const [editedStatus, setEditedStatus] = useState<TaskStatus>(task.status);
-  const [editedPriority, setEditedPriority] = useState<TaskPriority>(task.priority); // New: State for edited priority
-
-  const handleSubmit = (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!editedTitle.trim()) return;
-    onSave({
-      ...task,
-      title: editedTitle.trim(),
-      description: editedDescription.trim(),
-      dueDate: editedDueDate,
-      status: editedStatus,
-      priority: editedPriority, // New: Include priority in save
-    });
-  };
-
-  return (
-    <form onSubmit={handleSubmit} className="w-full space-y-3 p-2">
-      <div>
-        <label htmlFor={`edit-title-${task.id}`} className="sr-only">Task Title</label>
-        <input
-          id={`edit-title-${task.id}`}
-          type="text"
-          value={editedTitle}
-          onChange={(e) => setEditedTitle(e.target.value)}
-          className="w-full p-2 border rounded-lg bg-gray-100 dark:bg-gray-600 text-lg font-semibold"
-          required
-        />
-      </div>
-      <div>
-        <label htmlFor={`edit-description-${task.id}`} className="sr-only">Description</label>
-        <textarea
-          id={`edit-description-${task.id}`}
-          value={editedDescription}
-          onChange={(e) => setEditedDescription(e.target.value)}
-          rows={2}
-          className="w-full p-2 border rounded-lg bg-gray-100 dark:bg-gray-600 text-sm"
-        />
-      </div>
-      <div className="flex flex-col sm:flex-row gap-2">
-        <div className="flex-1">
-          <label htmlFor={`edit-duedate-${task.id}`} className="block text-xs font-medium text-gray-700 dark:text-gray-300">Due Date</label>
-          <input
-            id={`edit-duedate-${task.id}`}
-            type="date"
-            value={editedDueDate}
-            onChange={(e) => setEditedDueDate(e.target.value)}
-            className="w-full p-2 border rounded-lg bg-gray-100 dark:bg-gray-600 text-sm"
-            required
-          />
-        </div>
-        <div className="flex-1">
-          <label htmlFor={`edit-status-${task.id}`} className="block text-xs font-medium text-gray-700 dark:text-gray-300">Status</label>
+      {/* Filters and Task List */}
+      <div className="bg-gray-50 dark:bg-gray-800 p-6 rounded-lg shadow-sm border border-gray-200 dark:border-gray-700">
+        <h3 className="text-xl font-bold text-gray-900 dark:text-white mb-4 flex items-center">
+          <ArchiveBoxArrowDownIcon className="h-5 w-5 mr-2 text-green-600 dark:text-green-400" /> Your Tasks
+        </h3>
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-6">
           <select
-            id={`edit-status-${task.id}`}
-            value={editedStatus}
-            onChange={(e) => setEditedStatus(e.target.value as TaskStatus)}
-            className="w-full p-2 border rounded-lg bg-gray-100 dark:bg-gray-600 text-sm"
+            className="p-2 border border-gray-300 dark:border-gray-600 rounded-md bg-white dark:bg-gray-700 dark:text-white"
+            value={filterStatus}
+            onChange={(e) => setFilterStatus(e.target.value as 'All' | Task['status'])}
           >
+            <option value="All">All Statuses</option>
             <option value="Pending">Pending</option>
             <option value="In Progress">In Progress</option>
             <option value="Completed">Completed</option>
           </select>
-        </div>
-        <div className="flex-1">
-          <label htmlFor={`edit-priority-${task.id}`} className="block text-xs font-medium text-gray-700 dark:text-gray-300">Priority</label>
           <select
-            id={`edit-priority-${task.id}`}
-            value={editedPriority}
-            onChange={(e) => setEditedPriority(e.target.value as TaskPriority)}
-            className="w-full p-2 border rounded-lg bg-gray-100 dark:bg-gray-600 text-sm"
+            className="p-2 border border-gray-300 dark:border-gray-600 rounded-md bg-white dark:bg-gray-700 dark:text-white"
+            value={filterPriority}
+            onChange={(e) => setFilterPriority(e.target.value as 'All' | Task['priority'])}
           >
-            <option value="Low">Low</option>
-            <option value="Medium">Medium</option>
+            <option value="All">All Priorities</option>
             <option value="High">High</option>
+            <option value="Medium">Medium</option>
+            <option value="Low">Low</option>
+          </select>
+          <select
+            className="p-2 border border-gray-300 dark:border-gray-600 rounded-md bg-white dark:bg-gray-700 dark:text-white"
+            value={filterJobId}
+            onChange={(e) => setFilterJobId(e.target.value)}
+          >
+            <option value="All">All Jobs/Applications</option>
+            {allKnownJobs.map(job => (
+              <option key={job.id} value={job.id}>{job.title} ({job.company})</option>
+            ))}
+            {allApplications.map(app => (
+              <option key={app.id} value={app.id}>App: {app.jobTitle} ({app.companyName})</option>
+            ))}
           </select>
         </div>
+
+        {(tasks?.length || 0) === 0 ? (
+          <p className="text-center text-gray-500 dark:text-gray-400 text-lg mt-8">No tasks added yet!</p>
+        ) : (
+          <ul className="space-y-4">
+            {filteredTasks.length === 0 ? (
+              <p className="text-center text-gray-500 dark:text-gray-400 text-lg mt-8">No tasks match your filters.</p>
+            ) : (
+              filteredTasks.map(task => (
+                <li
+                  key={task.id}
+                  className="bg-white dark:bg-gray-700 p-4 rounded-lg shadow-sm border border-gray-200 dark:border-gray-600 flex flex-col sm:flex-row sm:items-center justify-between gap-3"
+                >
+                  <div className="flex-grow">
+                    <p className="font-semibold text-lg text-gray-900 dark:text-white mb-1">{task.title}</p>
+                    <p className="text-sm text-gray-700 dark:text-gray-300 flex items-center">
+                      <CalendarDaysIcon className="h-4 w-4 mr-1" /> Due: {isValidDate(task.dueDate) ? new Date(task.dueDate).toLocaleDateString('en-US', { year: 'numeric', month: 'short', day: 'numeric' }) : 'N/A'}
+                      <span className={`ml-3 px-2 py-0.5 rounded-full text-xs ${getPriorityClass(task.priority)}`}>
+                        {task.priority} Priority
+                      </span>
+                    </p>
+                    <p className="text-xs text-gray-500 dark:text-gray-400 mt-1 flex items-center">
+                      <MegaphoneIcon className="h-4 w-4 mr-1" /> {getJobDisplay(task.jobId, task.applicationId)}
+                    </p>
+                    {task.description && (
+                      <p className="text-sm text-gray-600 dark:text-gray-300 mt-2">{task.description}</p>
+                    )}
+                  </div>
+                  <div className="flex items-center space-x-2 flex-shrink-0">
+                    <select
+                      value={task.status}
+                      onChange={(e) => handleUpdateTaskStatus(task.id, e.target.value as Task['status'])}
+                      className={`p-2 border border-gray-300 dark:border-gray-600 rounded-md bg-white dark:bg-gray-700 text-sm ${getStatusClass(task.status)}`}
+                    >
+                      <option value="Pending">Pending</option>
+                      <option value="In Progress">In Progress</option>
+                      <option value="Completed">Completed</option>
+                    </select>
+                    <button
+                      onClick={() => handleDeleteTask(task.id)}
+                      className="p-2 rounded-full text-red-600 hover:text-red-800 dark:text-red-400 dark:hover:text-red-300 transition-colors duration-200"
+                      title="Delete Task"
+                    >
+                      <TrashIcon className="h-5 w-5" />
+                    </button>
+                  </div>
+                </li>
+              ))
+            )}
+          </ul>
+        )}
       </div>
-      <div className="flex justify-end gap-2 mt-3">
-        <button
-          type="button"
-          onClick={onCancel}
-          className="bg-gray-500 hover:bg-gray-600 text-white font-bold py-1 px-3 rounded-lg text-sm"
-        >
-          Cancel
-        </button>
-        <button
-          type="submit"
-          className="bg-green-600 hover:bg-green-700 text-white font-bold py-1 px-3 rounded-lg text-sm"
-        >
-          Save
-        </button>
-      </div>
-    </form>
+    </div>
   );
-};
+}
 
 export default TaskManager;
